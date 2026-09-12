@@ -1,0 +1,5 @@
+module qs.modules.bluetooth
+BluetoothDeviceList 1.0 BluetoothDeviceList.qml
+PairingPrompt 1.0 PairingPrompt.qml
+DeviceDetails 1.0 DeviceDetails.qml
+DevicePicker 1.0 DevicePicker.qml

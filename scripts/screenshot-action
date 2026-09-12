@@ -1,0 +1,645 @@
+#!/usr/bin/env python3
+"""Bounded screenshot I/O; native Quickshell owns capture and selection.
+
+Public commands emit one JSON object, never image bytes or subprocess stderr.
+Private workers survive a QML reload; they do not poll the desktop or clipboard.
+"""
+
+import contextlib
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import select
+import shlex
+import shutil
+import signal
+import stat
+import struct
+import subprocess
+import sys
+import time
+import uuid
+
+
+COPY_TIMEOUT = 5
+CROP_TIMEOUT = 10
+EDITOR_START_TIMEOUT = 3
+NOTIFICATION_TIMEOUT = 60
+IO_TIMEOUT = 10
+CLEANUP_TIMEOUT = 12
+MAX_IMAGE_BYTES = 512 * 1024 * 1024
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+FILE_FLAGS = os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+SESSION_NAME = re.compile(r"capture-[0-9a-f]{32}\Z")
+SOURCE_NAME = re.compile(r"screen-[0-9]+\.png\Z")
+DEFAULT_NOTIFICATION = ("Zapisano zrzut ekranu", "Kliknij, aby otworzyć zapisany obraz.", "Otwórz")
+
+
+class ActionError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def fail(code, message):
+    raise ActionError(code, message)
+
+
+@contextlib.contextmanager
+def deadline(seconds, code, message):
+    def expired(*_):
+        fail(code, message)
+
+    previous_handler = signal.signal(signal.SIGALRM, expired)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, seconds)
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0]:
+            signal.setitimer(signal.ITIMER_REAL, max(0.001, previous_timer[0] - (time.monotonic() - started)), previous_timer[1])
+
+
+def emit(value):
+    if not sys.stdout.closed:
+        print(json.dumps(value, ensure_ascii=False), flush=True)
+
+
+def absolute_path(value, code="unsafe_session"):
+    if not isinstance(value, str) or not value or "\0" in value:
+        fail(code, "A valid absolute path is required.")
+    if not value.startswith("/") or any(part in (".", "..") for part in value.split("/")):
+        fail(code, "Relative paths and parent traversal are not supported.")
+    return Path(value)
+
+
+def open_directory(path, create=False, code="unsafe_session"):
+    """Walk with dirfds: neither a final nor an intermediate symlink is followed."""
+    path = absolute_path(str(path), code)
+    fd = os.open("/", DIRECTORY_FLAGS)
+    try:
+        for part in path.parts[1:]:
+            if create:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            next_fd = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except OSError:
+        os.close(fd)
+        raise
+
+
+def runtime_base():
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+    return (absolute_path(runtime) / "quickshell-de-screenshots" if runtime
+            else Path("/tmp") / ("quickshell-de-screenshots-" + str(os.geteuid())))
+
+
+def private_directory(fd):
+    info = os.fstat(fd)
+    return info.st_uid == os.geteuid() and stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
+
+
+def open_base(create=False):
+    fd = open_directory(runtime_base(), create)
+    if not private_directory(fd):
+        os.close(fd)
+        fail("unsafe_session", "The screenshot runtime directory must be private and owned by this user.")
+    return fd
+
+
+def process_identity(pid):
+    try:
+        path = Path("/proc") / str(pid)
+        if path.stat().st_uid != os.geteuid():
+            return None
+        return (path / "stat").read_text().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+class Session:
+    def __init__(self, directory):
+        self.path = absolute_path(directory)
+        if self.path.parent != runtime_base() or not SESSION_NAME.fullmatch(self.path.name):
+            fail("unsafe_session", "The path is not a screenshot session.")
+        self.base_fd = self.fd = self.marker_fd = None
+        try:
+            self.base_fd = open_base()
+            self.fd = os.open(self.path.name, DIRECTORY_FLAGS, dir_fd=self.base_fd)
+            if not private_directory(self.fd):
+                fail("unsafe_session", "The screenshot session must be private and owned by this user.")
+            try:
+                self.marker_fd = os.open(".session", os.O_RDWR | FILE_FLAGS, dir_fd=self.fd)
+            except FileNotFoundError:
+                fail("unsafe_session", "The screenshot session marker is missing.")
+            info = os.fstat(self.marker_fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600:
+                fail("unsafe_session", "The screenshot session marker is invalid.")
+            self.marker = json.loads(os.read(self.marker_fd, 4097))
+            if (not isinstance(self.marker, dict) or self.marker.get("version") != 1
+                    or self.marker.get("name") != self.path.name
+                    or type(self.marker.get("ownerPid")) is not int
+                    or not isinstance(self.marker.get("ownerStart"), str)):
+                fail("unsafe_session", "The screenshot session marker is invalid.")
+        except FileNotFoundError:
+            self.close()
+            fail("session_missing", "The screenshot session no longer exists.")
+        except (OSError, ValueError, UnicodeError):
+            self.close()
+            fail("unsafe_session", "The screenshot session cannot be opened safely.")
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        for name in ("marker_fd", "fd", "base_fd"):
+            fd = getattr(self, name)
+            if fd is not None:
+                os.close(fd)
+                setattr(self, name, None)
+
+    def lock(self, allow_busy=False):
+        try:
+            fcntl.flock(self.marker_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if allow_busy:
+                return False
+            fail("session_busy", "The screenshot is being used by another action.")
+
+    def editor_owns_cleanup(self):
+        try:
+            info = os.stat(".editing", dir_fd=self.fd, follow_symlinks=False)
+            return stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and info.st_nlink == 1
+        except FileNotFoundError:
+            return False
+
+    def editor_started(self):
+        fd = os.open(".editing", os.O_WRONLY | os.O_CREAT | os.O_EXCL | FILE_FLAGS, 0o600, dir_fd=self.fd)
+        os.close(fd)
+
+    def image(self, filename="result.png"):
+        fd = None
+        try:
+            fd = os.open(filename, os.O_RDONLY | FILE_FLAGS, dir_fd=self.fd)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1 or not 33 <= info.st_size <= MAX_IMAGE_BYTES:
+                fail("invalid_image", "The screenshot is not a supported PNG file.")
+            header = os.read(fd, 33)
+            if header[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR":
+                fail("invalid_image", "The screenshot is not a supported PNG file.")
+            width, height = struct.unpack(">II", header[16:24])
+            if not (0 < width <= 32768 and 0 < height <= 32768 and width * height <= 268435456):
+                fail("invalid_image", "The screenshot dimensions are unsupported.")
+            os.fchmod(fd, 0o600)
+            os.lseek(fd, 0, os.SEEK_SET)
+            return fd, width, height
+        except OSError:
+            if fd is not None:
+                os.close(fd)
+            fail("invalid_image", "The screenshot PNG cannot be opened safely.")
+        except BaseException:
+            if fd is not None:
+                os.close(fd)
+            raise
+
+    def remove(self):
+        """Only unlink leaf files inside a verified session; never recurse outside it."""
+        names = os.listdir(self.fd)
+        for name in names:
+            info = os.stat(name, dir_fd=self.fd, follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode):
+                fail("unsafe_session", "Unexpected entries prevent screenshot cleanup.")
+        # Keep the marker until all other files have been removed.
+        for name in names:
+            if name != ".session":
+                os.unlink(name, dir_fd=self.fd)
+        os.unlink(".session", dir_fd=self.fd)
+        os.rmdir(self.path.name, dir_fd=self.base_fd)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+
+def cleanup(directory):
+    try:
+        with Session(directory) as session:
+            if not session.lock(allow_busy=True):
+                if session.editor_owns_cleanup():
+                    return dict(ok=True, removed=False, deferred=True)
+                # This command is detached by QML. Wait for a short action or
+                # a dying QML helper without relying on that helper's callback.
+                try:
+                    with deadline(CLEANUP_TIMEOUT, "cleanup_timeout", "The screenshot is still in use."):
+                        fcntl.flock(session.marker_fd, fcntl.LOCK_EX)
+                except ActionError:
+                    if session.editor_owns_cleanup():
+                        return dict(ok=True, removed=False, deferred=True)
+                    raise
+            try:
+                os.stat(session.path.name, dir_fd=session.base_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return dict(ok=True, removed=False)
+            session.remove()
+            return dict(ok=True, removed=True)
+    except ActionError as error:
+        if error.code == "session_missing":
+            return dict(ok=True, removed=False)
+        raise
+
+
+def prepare(owner=""):
+    owner_pid, owner_start = 0, ""
+    if owner:
+        if not re.fullmatch(r"[1-9][0-9]{0,9}", owner):
+            fail("bad_arguments", "The owner PID must identify a running process of this user.")
+        owner_pid = int(owner)
+        owner_start = process_identity(owner_pid)
+        if owner_start is None:
+            fail("bad_arguments", "The owner PID must identify a running process of this user.")
+    base_fd = open_base(create=True)
+    name, fd, created, completed = "", None, False, False
+    try:
+        for existing_name in os.listdir(base_fd):
+            if not SESSION_NAME.fullmatch(existing_name):
+                continue
+            try:
+                with Session(str(runtime_base() / existing_name)) as old:
+                    pid = old.marker["ownerPid"]
+                    if pid > 0 and process_identity(pid) != old.marker["ownerStart"] and old.lock(allow_busy=True):
+                        old.remove()
+            except ActionError as error:
+                if error.code not in ("unsafe_session", "session_missing", "session_busy"):
+                    raise
+            except OSError:
+                # A live, invalid or concurrently disappearing session is left alone.
+                pass
+        name = "capture-" + uuid.uuid4().hex
+        os.mkdir(name, 0o700, dir_fd=base_fd)
+        created = True
+        fd = os.open(name, DIRECTORY_FLAGS, dir_fd=base_fd)
+        marker_fd = os.open(".session", os.O_CREAT | os.O_EXCL | os.O_WRONLY | FILE_FLAGS, 0o600, dir_fd=fd)
+        with os.fdopen(marker_fd, "w") as marker:
+            json.dump(dict(version=1, name=name, ownerPid=owner_pid, ownerStart=owner_start), marker)
+        reply = dict(ok=True, directory=str(runtime_base() / name), editorAvailable=shutil.which("satty") is not None)
+        completed = True
+        return reply
+    finally:
+        if created and not completed:
+            if fd is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(".session", dir_fd=fd)
+            with contextlib.suppress(FileNotFoundError):
+                os.rmdir(name, dir_fd=base_fd)
+        if fd is not None:
+            os.close(fd)
+        os.close(base_fd)
+
+
+def run_bounded(argv, timeout, *, stdin=None, stdout=subprocess.DEVNULL, pass_fds=(), env=None):
+    process = subprocess.Popen(argv, stdin=stdin if stdin is not None else subprocess.DEVNULL,
+                               stdout=stdout, stderr=subprocess.DEVNULL, start_new_session=True,
+                               pass_fds=pass_fds, env=env)
+    try:
+        output, _ = process.communicate(timeout=timeout)
+        return process.returncode, output
+    except BaseException:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        raise
+
+
+def crop(directory, source, coordinates):
+    if not SOURCE_NAME.fullmatch(source) or len(coordinates) != 4 or any(not re.fullmatch(r"[0-9]{1,6}", value) for value in coordinates):
+        fail("invalid_crop", "The screenshot selection is invalid.")
+    x, y, width, height = map(int, coordinates)
+    if width < 1 or height < 1:
+        fail("invalid_crop", "Select an area with a positive size.")
+    executable = shutil.which("magick")
+    if not executable:
+        fail("crop_unavailable", "ImageMagick is required to crop the screenshot.")
+    with Session(directory) as session:
+        session.lock()
+        image_fd, source_width, source_height = session.image(source)
+        with os.fdopen(image_fd, "rb"):
+            if x + width > source_width or y + height > source_height:
+                fail("invalid_crop", "The selection extends beyond the captured image.")
+            temporary = ".crop-" + uuid.uuid4().hex + ".png"
+            output_fd = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | FILE_FLAGS, 0o600, dir_fd=session.fd)
+            try:
+                try:
+                    status, _ = run_bounded([executable, "-limit", "memory", "256MiB", "-limit", "map", "512MiB", "-limit", "disk", "0",
+                                             "png:/proc/self/fd/" + str(image_fd), "-crop", f"{width}x{height}+{x}+{y}", "+repage",
+                                             "png:/proc/self/fd/" + str(output_fd)], CROP_TIMEOUT,
+                                            pass_fds=(image_fd, output_fd), env=dict(os.environ, MAGICK_TEMPORARY_PATH=str(session.path)))
+                except FileNotFoundError:
+                    fail("crop_unavailable", "ImageMagick is required to crop the screenshot.")
+                except subprocess.TimeoutExpired:
+                    fail("crop_timeout", "Cropping the screenshot took too long.")
+                except OSError:
+                    fail("crop_failed", "The screenshot could not be cropped.")
+                if status != 0:
+                    fail("crop_failed", "The screenshot could not be cropped.")
+                checked_fd, actual_width, actual_height = session.image(temporary)
+                os.close(checked_fd)
+                if (actual_width, actual_height) != (width, height):
+                    fail("crop_failed", "The cropped image has unexpected dimensions.")
+                os.fsync(output_fd)
+                os.replace(temporary, "result.png", src_dir_fd=session.fd, dst_dir_fd=session.fd)
+                return dict(ok=True, width=width, height=height)
+            finally:
+                os.close(output_fd)
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(temporary, dir_fd=session.fd)
+
+
+def pictures_directory():
+    home = Path.home()
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config") / "user-dirs.dirs"
+    try:
+        # Follow ordinary dotfile symlinks, but never block on a FIFO/device.
+        config_fd = os.open(config, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(config_fd) as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return home / "Pictures"
+            data = stream.read(65537)
+        if len(data) > 65536:
+            return home / "Pictures"
+        for line in data.splitlines():
+            if not line.lstrip().startswith("XDG_PICTURES_DIR="):
+                continue
+            values = shlex.split(line.split("=", 1)[1], comments=True)
+            if len(values) != 1:
+                continue
+            value = values[0]
+            for variable in ("${HOME}", "$HOME"):
+                if value == variable or value.startswith(variable + "/"):
+                    value = str(home) + value[len(variable):]
+                    break
+            if value.startswith("/"):
+                return absolute_path(value, "invalid_destination")
+    except (OSError, ValueError, UnicodeError):
+        pass
+    return home / "Pictures"
+
+
+def destination_directory(value):
+    if not value:
+        return pictures_directory() / "Screenshots"
+    if value.startswith("~/"):
+        value = str(Path.home()) + value[1:]
+    return absolute_path(value, "invalid_destination")
+
+
+def reserve_output(directory):
+    try:
+        destination = destination_directory(directory)
+        fd = open_directory(destination, create=True, code="invalid_destination")
+    except OSError:
+        fail("invalid_destination", "The screenshot destination cannot be opened safely.")
+    try:
+        prefix = time.strftime("Screenshot-%Y-%m-%d_%H-%M-%S")
+        for _ in range(8):
+            name = prefix + "-" + uuid.uuid4().hex[:12] + ".png"
+            try:
+                output_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | FILE_FLAGS, 0o600, dir_fd=fd)
+                return fd, output_fd, destination / name
+            except FileExistsError:
+                continue
+        fail("save_failed", "A unique screenshot filename could not be created.")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def detach(command, *args, stdout=subprocess.DEVNULL):
+    return subprocess.Popen([sys.executable, str(Path(__file__).resolve()), command, *args],
+                            stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.DEVNULL,
+                            start_new_session=True, close_fds=True)
+
+
+def notify_saved(path, labels):
+    # Notification delivery never changes the success of an already completed save.
+    with contextlib.suppress(OSError):
+        detach("_notify", str(path), *labels)
+
+
+def notification_worker(path, labels):
+    executable = shutil.which("notify-send")
+    if not executable:
+        return
+    title, body, open_label = labels
+    try:
+        code, output = run_bounded([executable, "--app-name=Quickshell", "--icon=camera-photo-symbolic",
+                                   "--hint=boolean:transient:true", "--action=open=" + open_label,
+                                   "--wait", "--expire-time=8000", "--", title, body],
+                                  NOTIFICATION_TIMEOUT, stdout=subprocess.PIPE)
+        if code == 0 and output.strip() == b"open":
+            opener = shutil.which("xdg-open")
+            if opener:
+                subprocess.Popen([opener, Path(path).as_uri()], stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+
+
+def save_image(image_fd, directory, labels):
+    destination_fd, output_fd, path = reserve_output(directory)
+    complete = False
+    try:
+        with os.fdopen(output_fd, "wb") as output, os.fdopen(os.dup(image_fd), "rb") as source:
+            shutil.copyfileobj(source, output, 1024 * 1024)
+            output.flush()
+            os.fsync(output.fileno())
+        complete = True
+        notify_saved(path, labels)
+        return dict(ok=True, path=str(path))
+    except OSError:
+        fail("save_failed", "The screenshot could not be saved. The original is still available.")
+    finally:
+        if not complete:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(path.name, dir_fd=destination_fd)
+        os.close(destination_fd)
+
+
+def start_editor(directory, destination, labels):
+    if not shutil.which("satty"):
+        fail("editor_missing", "Satty is not installed. You can still copy or save the screenshot.")
+    worker = None
+    ready = False
+    try:
+        worker = detach("_edit", directory, destination, *labels, stdout=subprocess.PIPE)
+        readable, _, _ = select.select([worker.stdout], [], [], EDITOR_START_TIMEOUT)
+        if not readable:
+            fail("editor_timeout", "The screenshot editor did not start in time.")
+        payload = worker.stdout.readline(4097)
+        reply = json.loads(payload)
+        if not isinstance(reply, dict) or type(reply.get("ok")) is not bool:
+            raise ValueError("invalid acknowledgement")
+        if not reply["ok"]:
+            fail(reply.get("code", "editor_failed"), reply.get("message", "The screenshot editor could not be started."))
+        ready = True
+        return reply
+    except (OSError, ValueError, UnicodeError):
+        fail("editor_failed", "The screenshot editor could not be started. You can still copy or save the screenshot.")
+    finally:
+        if worker:
+            worker.stdout.close()
+            if not ready:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(worker.pid, signal.SIGTERM)
+                try:
+                    worker.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(worker.pid, signal.SIGKILL)
+                    worker.wait()
+
+
+def editor_worker(directory, destination, labels):
+    def cancelled(*_):
+        raise SystemExit(1)
+
+    signal.signal(signal.SIGTERM, cancelled)
+    executable = shutil.which("satty")
+    if not executable:
+        fail("editor_missing", "Satty is not installed. You can still copy or save the screenshot.")
+    with Session(directory) as session:
+        session.lock()
+        image_fd, _, _ = session.image()
+        os.close(image_fd)
+        destination_fd, output_fd, path = reserve_output(destination)
+        os.close(output_fd)
+        started = False
+        process = None
+        try:
+            process = subprocess.Popen([executable, "--filename", str(session.path / "result.png"),
+                                        "--output-filename", str(path).replace("%", "%%"),
+                                        "--copy-command", "wl-copy --type image/png", "--disable-notifications"],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                status = process.wait(timeout=0.15)
+            except subprocess.TimeoutExpired:
+                status = None
+            if status is not None and status != 0:
+                fail("editor_failed", "The screenshot editor could not be started. You can still copy or save the screenshot.")
+            session.editor_started()
+            started = True
+            # QML can reload during handoff. A closed acknowledgement pipe must
+            # not abandon the running editor or its eventual cleanup.
+            with contextlib.suppress(BrokenPipeError):
+                emit(dict(ok=True, path="", editorStarted=True))
+            with contextlib.suppress(BrokenPipeError):
+                sys.stdout.close()
+            # A human controls this editor's lifetime. Blocking wait adds no polling.
+            process.wait()
+        except OSError:
+            fail("editor_failed", "The screenshot editor could not be started. You can still copy or save the screenshot.")
+        finally:
+            if not started and process and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            try:
+                info = os.stat(path.name, dir_fd=destination_fd, follow_symlinks=False)
+                if stat.S_ISREG(info.st_mode) and info.st_size == 0:
+                    os.unlink(path.name, dir_fd=destination_fd)
+                elif stat.S_ISREG(info.st_mode) and info.st_size > 0 and started:
+                    notify_saved(path, labels)
+            except OSError:
+                pass
+            os.close(destination_fd)
+            if started:
+                session.remove()
+
+
+def finish(action, directory, destination, labels):
+    if action not in ("copy", "save", "edit"):
+        fail("bad_arguments", "The screenshot action is not supported.")
+    # The editor acquires its own lock before acknowledging handoff.
+    if action == "edit":
+        return start_editor(directory, destination, labels)
+    with Session(directory) as session:
+        session.lock()
+        image_fd, _, _ = session.image()
+        with os.fdopen(image_fd, "rb") as source:
+            if action == "save":
+                return save_image(image_fd, destination, labels)
+            executable = shutil.which("wl-copy")
+            if not executable:
+                fail("clipboard_missing", "wl-copy is required to copy the screenshot.")
+            try:
+                status, _ = run_bounded([executable, "--type", "image/png"], COPY_TIMEOUT, stdin=source)
+            except FileNotFoundError:
+                fail("clipboard_missing", "wl-copy is required to copy the screenshot.")
+            except subprocess.TimeoutExpired:
+                fail("clipboard_timeout", "Copying the screenshot took too long. You can retry or save it.")
+            except OSError:
+                fail("clipboard_failed", "The screenshot could not be copied. You can retry or save it.")
+            if status != 0:
+                fail("clipboard_failed", "The screenshot could not be copied. You can retry or save it.")
+            return dict(ok=True, path="")
+
+
+def main(args):
+    os.umask(0o077)
+    command = args[0] if args else ""
+    if command not in ("_edit", "_notify"):
+        def cancelled(*_):
+            fail("cancelled", "The screenshot operation was cancelled.")
+
+        signal.signal(signal.SIGTERM, cancelled)
+    try:
+        if command == "prepare" and len(args) in (1, 2):
+            with deadline(IO_TIMEOUT, "prepare_timeout", "Preparing screenshot storage took too long."):
+                reply = prepare(args[1] if len(args) == 2 else "")
+        elif command == "crop" and len(args) == 7:
+            reply = crop(args[1], args[2], args[3:])
+        elif command == "cleanup" and len(args) == 2:
+            reply = cleanup(args[1])
+        elif command == "finish" and len(args) in (4, 7):
+            labels = args[4:] if len(args) == 7 else DEFAULT_NOTIFICATION
+            if args[1] == "save":
+                with deadline(IO_TIMEOUT, "save_timeout", "Saving the screenshot took too long. The original is still available."):
+                    reply = finish(args[1], args[2], args[3], labels)
+            else:
+                reply = finish(args[1], args[2], args[3], labels)
+        elif command == "_edit" and len(args) == 6:
+            editor_worker(args[1], args[2], args[3:])
+            return 0
+        elif command == "_notify" and len(args) == 5:
+            notification_worker(args[1], args[2:])
+            return 0
+        else:
+            fail("bad_arguments", "Usage: screenshot-action prepare [PID] | crop SESSION SOURCE X Y W H | finish copy|save|edit SESSION DEST [TITLE BODY OPEN_LABEL] | cleanup SESSION")
+        emit(reply)
+        return 0
+    except ActionError as error:
+        emit(dict(ok=False, code=error.code, message=error.message))
+        return 1
+    except OSError:
+        code = "prepare_failed" if command == "prepare" else "save_failed" if command == "finish" else "unsafe_session"
+        emit(dict(ok=False, code=code, message="The screenshot operation could not be completed."))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

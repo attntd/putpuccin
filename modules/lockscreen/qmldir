@@ -1,0 +1,3 @@
+LockScreen 1.0 LockScreen.qml
+LockView 1.0 LockView.qml
+LockExit 1.0 LockExit.qml

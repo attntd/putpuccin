@@ -1,0 +1,7 @@
+{
+  "name": "org.quickshell.browser_media",
+  "description": "Scoped local browser media integration for Quickshell",
+  "path": "@HOST_PATH@",
+  "type": "stdio",
+  "allowed_extensions": ["quickshell-browser-media@local"]
+}

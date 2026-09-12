@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+terminal_pid="${1:-}"
+case "$terminal_pid" in
+    ''|*[!0-9]*) exit 64 ;;
+esac
+
+[ -d "/proc/$terminal_pid" ] || exit 1
+
+find_shell_cwd() {
+    parent_pid="$1"
+    children_file="/proc/$parent_pid/task/$parent_pid/children"
+    [ -r "$children_file" ] || return 1
+
+    children="$(sed -n '1p' "$children_file" 2>/dev/null || true)"
+    for child_pid in $children; do
+        command_name="$(sed -n '1p' "/proc/$child_pid/comm" 2>/dev/null || true)"
+        case "$command_name" in
+            sh|bash|dash|fish|zsh|nu|elvish)
+                readlink -f "/proc/$child_pid/cwd" 2>/dev/null
+                return
+                ;;
+        esac
+    done
+
+    for child_pid in $children; do
+        if find_shell_cwd "$child_pid"; then
+            return
+        fi
+    done
+    return 1
+}
+
+find_shell_cwd "$terminal_pid" || readlink -f "/proc/$terminal_pid/cwd"

@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/quickshell-de/settings.schema.json",
+  "title": "Quickshell DE settings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "barHeight": {
+      "type": "integer",
+      "minimum": 34,
+      "maximum": 64,
+      "default": 40
+    },
+    "topMargin": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 32,
+      "default": 8
+    },
+    "sideMargin": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64,
+      "default": 12
+    },
+    "reservedHeight": {
+      "type": "integer",
+      "minimum": 34,
+      "maximum": 96,
+      "default": 48
+    },
+    "hideOnFullscreen": {
+      "type": "boolean",
+      "default": true
+    },
+    "reducedMotion": {
+      "type": "boolean",
+      "default": false
+    },
+    "polkitEnabled": {
+      "type": "boolean",
+      "default": true
+    },
+    "barSurfaceOpacity": {
+      "type": "number",
+      "minimum": 0.55,
+      "maximum": 1,
+      "default": 0.9
+    },
+    "surfaceOpacity": {
+      "type": "number",
+      "minimum": 0.55,
+      "maximum": 1,
+      "default": 0.84
+    },
+    "interactiveOpacity": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0
+    },
+    "launcherPositionFromBottom": {
+      "type": "number",
+      "minimum": 0.1,
+      "maximum": 0.9,
+      "default": 0.65
+    },
+    "hoverCloseDelay": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "deprecated": true,
+      "description": "Legacy setting; panels now close by click or Escape."
+    },
+    "trayVisibleItems": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 12,
+      "default": 3
+    },
+    "volumeStep": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20,
+      "default": 5
+    },
+    "brightnessStep": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20,
+      "default": 5
+    },
+    "clipboardAutoPaste": {
+      "type": "boolean",
+      "default": false
+    },
+    "clipboardMaxItems": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500,
+      "default": 50
+    },
+    "clipboardMaxBytes": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 10485760,
+      "default": 2097152
+    },
+    "clockFormat": {
+      "type": "string",
+      "minLength": 1,
+      "default": "HH:mm"
+    },
+    "screenshotDirectory": {
+      "type": "string",
+      "pattern": "^(/.*)?$",
+      "not": {
+        "pattern": "[\u0000-\u001f\u007f]"
+      },
+      "default": "",
+      "description": "Absolute screenshot directory without control characters; empty uses XDG Pictures/Screenshots."
+    },
+    "screenshotPaintCursor": {
+      "type": "boolean",
+      "default": false,
+      "description": "Include the pointer in the frozen screenshot frame."
+    },
+    "clockDateFormat": {
+      "type": "string",
+      "minLength": 1,
+      "default": "d MMM"
+    },
+    "leftModules": {
+      "$ref": "#/$defs/moduleList"
+    },
+    "centerModules": {
+      "$ref": "#/$defs/moduleList"
+    },
+    "rightModules": {
+      "$ref": "#/$defs/moduleList"
+    },
+    "moduleOptions": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/moduleId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/moduleOptions"
+      }
+    },
+    "notificationToastDuration": {
+      "type": "integer",
+      "default": 6000,
+      "minimum": 1000,
+      "maximum": 30000
+    },
+    "notificationMaxToasts": {
+      "type": "integer",
+      "default": 3,
+      "minimum": 1,
+      "maximum": 5
+    },
+    "notificationHistoryDays": {
+      "type": "integer",
+      "default": 7,
+      "minimum": 1,
+      "maximum": 30
+    },
+    "notificationHistoryLimit": {
+      "type": "integer",
+      "default": 500,
+      "minimum": 1,
+      "maximum": 500
+    },
+    "notificationWidth": {
+      "type": "integer",
+      "default": 420,
+      "minimum": 320,
+      "maximum": 640
+    },
+    "notificationCenterHeightFraction": {
+      "type": "number",
+      "default": 1.0,
+      "minimum": 0.2,
+      "maximum": 1.0
+    },
+    "wallpaperEnabled": {
+      "type": "boolean",
+      "default": true
+    },
+    "wallpaperDirectory": {
+      "type": "string",
+      "pattern": "^(/.*)?$",
+      "default": ""
+    },
+    "wallpaperIntervalMinutes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1440,
+      "default": 30
+    },
+    "wallpaperTransitionDuration": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000,
+      "default": 3000
+    },
+    "notificationShowBadge": {
+      "type": "boolean",
+      "default": false,
+      "deprecated": true,
+      "description": "Legacy setting accepted for compatibility. Notification presence uses the bell accent color; no badge is shown."
+    },
+    "notificationSoundEnabled": {
+      "type": "boolean",
+      "default": true
+    },
+    "lockAvatarPath": {
+      "type": "string",
+      "pattern": "^/",
+      "description": "Absolute path to the lock screen avatar"
+    }
+  },
+  "$defs": {
+    "moduleId": {
+      "enum": [
+        "power",
+        "launcher",
+        "workspaces",
+        "context",
+        "media",
+        "clipboard",
+        "tray",
+        "quickSettings",
+        "audio",
+        "brightness",
+        "network",
+        "bluetooth",
+        "battery",
+        "notifications",
+        "clock"
+      ]
+    },
+    "moduleList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/moduleId"
+      }
+    },
+    "safeAction": {
+      "enum": [
+        "none",
+        "openPopup",
+        "toggleMute",
+        "increase",
+        "decrease",
+        "activate",
+        "secondaryActivate",
+        "toggleDnd",
+        "launchFallback"
+      ]
+    },
+    "moduleOptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "presentation": {
+          "enum": [
+            "adaptive",
+            "icon",
+            "label"
+          ]
+        },
+        "expandOnHover": {
+          "type": "boolean",
+          "deprecated": true,
+          "description": "Legacy option; panels now open only on explicit activation."
+        },
+        "primaryAction": {
+          "$ref": "#/$defs/safeAction"
+        },
+        "secondaryAction": {
+          "$ref": "#/$defs/safeAction"
+        },
+        "scrollUpAction": {
+          "$ref": "#/$defs/safeAction"
+        },
+        "scrollDownAction": {
+          "$ref": "#/$defs/safeAction"
+        }
+      }
+    }
+  }
+}

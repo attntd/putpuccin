@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "barHeight": 40,
+  "topMargin": 8,
+  "sideMargin": 12,
+  "reservedHeight": 48,
+  "hideOnFullscreen": true,
+  "reducedMotion": false,
+  "polkitEnabled": true,
+  "barSurfaceOpacity": 0.90,
+  "surfaceOpacity": 0.84,
+  "interactiveOpacity": 0.0,
+  "launcherPositionFromBottom": 0.65,
+  "trayVisibleItems": 3,
+  "volumeStep": 5,
+  "brightnessStep": 5,
+  "clipboardAutoPaste": false,
+  "clipboardMaxItems": 50,
+  "clipboardMaxBytes": 2097152,
+  "screenshotDirectory": "",
+  "screenshotPaintCursor": false,
+  "clockFormat": "HH:mm",
+  "clockDateFormat": "d MMM",
+  "leftModules": [
+    "power",
+    "workspaces"
+  ],
+  "centerModules": [
+    "launcher",
+    "context",
+    "media"
+  ],
+  "rightModules": [
+    "tray",
+    "clipboard",
+    "network",
+    "bluetooth",
+    "battery",
+    "notifications",
+    "quickSettings",
+    "clock"
+  ],
+  "moduleOptions": {
+    "audio": {
+      "presentation": "adaptive",
+      "primaryAction": "openPopup",
+      "secondaryAction": "toggleMute",
+      "scrollUpAction": "increase",
+      "scrollDownAction": "decrease"
+    },
+    "brightness": {
+      "presentation": "adaptive",
+      "primaryAction": "openPopup",
+      "scrollUpAction": "increase",
+      "scrollDownAction": "decrease"
+    },
+    "network": {
+      "presentation": "icon",
+      "primaryAction": "openPopup",
+      "secondaryAction": "launchFallback"
+    },
+    "bluetooth": {
+      "presentation": "adaptive",
+      "primaryAction": "openPopup",
+      "secondaryAction": "launchFallback"
+    },
+    "notifications": {
+      "presentation": "adaptive",
+      "primaryAction": "activate",
+      "secondaryAction": "toggleDnd"
+    }
+  },
+  "notificationToastDuration": 6000,
+  "notificationMaxToasts": 3,
+  "notificationHistoryDays": 7,
+  "notificationHistoryLimit": 500,
+  "notificationWidth": 420,
+  "notificationCenterHeightFraction": 1.0,
+  "wallpaperEnabled": true,
+  "wallpaperDirectory": "",
+  "wallpaperIntervalMinutes": 30,
+  "wallpaperTransitionDuration": 3000,
+  "notificationShowBadge": false,
+  "notificationSoundEnabled": true
+}

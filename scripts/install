@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+"""Install dependencies, build and deploy Quickshell DE for a TTY-started session."""
+import argparse
+from contextlib import contextmanager
+import ctypes
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+ARCH_PACKAGES = (
+    "git", "base-devel", "bash", "coreutils", "sed", "jq",
+    "quickshell", "hyprland", "uwsm", "hyprlock", "wayland", "pkgconf",
+    "qt6-base", "qt6-declarative", "qt6-wayland", "qt6-svg", "qt6-multimedia",
+    "python", "python-dbus", "dbus", "systemd", "polkit", "pam", "pambase",
+    "pipewire", "wireplumber", "networkmanager", "libnm", "bluez", "upower",
+    "power-profiles-daemon", "wl-clipboard", "cliphist", "file", "brightnessctl",
+    "fd", "xdg-utils", "libnotify", "fontconfig", "ttf-jetbrains-mono-nerd",
+)
+NATIVE = {
+    "BluetoothNative": "libbluetoothagent.so",
+    "NetworkManagerNative": "libnetworkmanager.so",
+    "ScreenshotNative": "libscreenshotexport.so",
+    "SessionNative": "libsessioninhibitor.so",
+}
+LOCK_OBSERVER = Path("integrations/LockObserver/lock-observer")
+RUNTIME_SCRIPTS = (
+    "brightness-transition", "caffeinate-hold", "caffeinate-idle",
+    "check-dependencies", "clipboard-action", "clipboard-store",
+    "fingerprint-enrolled", "lock-screen", "notification-state",
+    "power-capabilities", "screenshot-action", "ssh-askpass",
+    "terminal-context", "terminal-cwd",
+)
+
+
+def missing_arch_packages():
+    # -T also recognises providers such as a locally built quickshell package.
+    result = subprocess.run(["pacman", "-T", *ARCH_PACKAGES],
+                            capture_output=True, text=True)
+    if result.returncode not in (0, 127):
+        raise RuntimeError("Cannot check Arch dependencies: " + result.stderr.strip())
+    return result.stdout.splitlines()
+
+
+def install_dependencies(*, dry_run=False):
+    if platform.freedesktop_os_release().get("ID") != "arch" or not shutil.which("pacman"):
+        raise RuntimeError("Automatic package installation requires Arch Linux. "
+                           "Install the dependencies from docs/setup.md and use --skip-packages.")
+    missing = missing_arch_packages()
+    if not missing:
+        print("All required Arch packages are installed.", flush=True)
+        return
+    command = ["sudo", "pacman", "-Syu", "--needed", *missing]
+    print("Missing packages: " + ", ".join(missing), flush=True)
+    print("Package installation also performs a full system upgrade:", flush=True)
+    print(shlex.join(command), flush=True)
+    if dry_run:
+        return
+    if not shutil.which("sudo"):
+        raise RuntimeError("Install/configure sudo or install the listed packages and use --skip-packages.")
+    subprocess.run(command, check=True)
+    missing = missing_arch_packages()
+    if missing:
+        raise RuntimeError("Required packages are still missing: " + ", ".join(missing))
+
+
+@contextmanager
+def temporary_directory(*, prefix, directory=None):
+    path = Path(tempfile.mkdtemp(prefix=prefix, dir=directory))
+    try:
+        yield path
+    finally:
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            pass  # First installation moved the staging directory into place.
+        except OSError as error:
+            # Cleanup must not turn a completed activation into a failed install
+            # or mask the original build error. Only name this invocation's dir.
+            print(f"Warning: could not remove temporary files in {path}: {error}", file=sys.stderr)
+            print("Cleanup command: " + shlex.join(["rm", "-rf", "--", str(path)]), file=sys.stderr)
+
+
+def build_native(workspace):
+    env = dict(os.environ, QS_BUILD_ROOT=str(workspace), TMPDIR=str(workspace))
+    subprocess.run([sys.executable, str(ROOT / "scripts/build-native")], env=env, check=True)
+
+
+def copy_file(source, destination):
+    if source.is_symlink():
+        raise ValueError(f"Runtime source must be a regular file: {source}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+
+
+def copy_tree(source, destination, *, qml_only=False):
+    for path in sorted(source.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"Runtime source contains a symlink: {path}")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(source)
+        if any(part in {"tests", "docs", "build", "__pycache__", ".cache"}
+               or part.startswith(".") for part in relative.parts):
+            continue
+        if path.suffix in {".md", ".pyc", ".pyo", ".in"}:
+            continue
+        if qml_only and path.suffix not in {".qml", ".js"} and path.name != "qmldir":
+            continue
+        copy_file(path, destination / relative)
+
+
+def package(source, stage, destination, *, native_root=None):
+    native_root = source if native_root is None else native_root
+    for directory in ("components", "core", "modules", "popups", "services"):
+        copy_tree(source / directory, stage / directory, qml_only=True)
+    for directory in ("assets", "config"):
+        copy_tree(source / directory, stage / directory)
+    copy_file(source / "qmldir", stage / "qmldir")
+    shell = (source / "shell.qml").read_text()
+    shell = "\n".join(line for line in shell.splitlines()
+                      if not line.startswith("//@ pragma Env QML_IMPORT_PATH = ")) + "\n"
+    (stage / "shell.qml").write_text(
+        f"//@ pragma Env QML_IMPORT_PATH = {destination / 'integrations'}\n" + shell)
+    for module, library in NATIVE.items():
+        copy_file(source / "integrations" / module / "qmldir",
+                  stage / "integrations" / module / "qmldir")
+        copy_file(native_root / "integrations" / module / library,
+                  stage / "integrations" / module / library)
+    copy_file(native_root / LOCK_OBSERVER, stage / LOCK_OBSERVER)
+    copy_file(source / LOCK_OBSERVER.parent / "LICENSE", stage / LOCK_OBSERVER.parent / "LICENSE")
+    browser = Path("integrations/browser-media")
+    for directory in ("extension", "host"):
+        copy_tree(source / browser / directory, stage / browser / directory)
+    manifest = json.loads((source / browser / "host/org.quickshell.browser_media.json.in").read_text())
+    manifest["path"] = str(destination / browser / "host/browser_media_host.py")
+    (stage / browser / "host/org.quickshell.browser_media.json").write_text(
+        json.dumps(manifest, indent=2) + "\n")
+    for script in RUNTIME_SCRIPTS:
+        copy_file(source / "scripts" / script, stage / "scripts" / script)
+    (stage / "README.md").write_text(
+        "# Zainstalowany Quickshell DE\n\n"
+        f"Projekt źródłowy: `{source}`.\n\n"
+        "Kod, testy i dokumentację edytuj w projekcie. Aktualizuj tę kopię\n"
+        "poleceniem `./scripts/install` uruchomionym z projektu.\n"
+        "Ustawienia użytkownika są w `$XDG_CONFIG_HOME/quickshell-de/settings.json`\n"
+        "(domyślnie `~/.config/quickshell-de/settings.json`).\n"
+        "Wersję i sumy kontrolne plików zapisano w `.installed.json`.\n")
+
+
+def check_lock_observer(stage):
+    """Check the packaged executable and linked libraries without using Wayland."""
+    result = subprocess.run([str(stage / LOCK_OBSERVER), "--version"],
+                            capture_output=True, text=True, timeout=5)
+    if result.returncode != 0 or not result.stdout.startswith("quickshell-lock-observer 1 "):
+        raise RuntimeError("Packaged lock observer did not load: " + result.stderr.strip())
+
+
+def check_native_imports(stage, *, temporary_root=None):
+    """Load the packaged plugins without creating services or desktop windows."""
+    with temporary_directory(prefix="qs-package-check-", directory=temporary_root) as probe:
+        (probe / "runtime").mkdir(mode=0o700)
+        (probe / "shell.qml").write_text(
+            "import QtQuick\nimport Quickshell\n" +
+            "".join(f"import {module}\n" for module in NATIVE) +
+            'Scope { Component.onCompleted: console.info("PACKAGE_IMPORTS_OK") }\n')
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", WAYLAND_DISPLAY="", DISPLAY="",
+                   HYPRLAND_INSTANCE_SIGNATURE="", QT_QPA_PLATFORMTHEME="",
+                   QML_IMPORT_PATH=str(stage / "integrations"),
+                   XDG_RUNTIME_DIR=str(probe / "runtime"),
+                   DBUS_SESSION_BUS_ADDRESS="unix:path=/nonexistent-qs-package-bus",
+                   DBUS_SYSTEM_BUS_ADDRESS="unix:path=/nonexistent-qs-package-bus")
+        for kind in ("CONFIG", "DATA", "STATE", "CACHE"):
+            env[f"XDG_{kind}_HOME"] = str(probe / kind.lower())
+        log_path = probe / "check.log"
+        with log_path.open("w") as log:
+            process = subprocess.Popen(["qs", "-p", str(probe), "--no-color"],
+                                       env=env, stdout=log, stderr=log)
+            try:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    output = log_path.read_text()
+                    if "PACKAGE_IMPORTS_OK" in output and "Configuration Loaded" in output:
+                        return
+                    if process.poll() is not None:
+                        break
+                    time.sleep(0.02)
+                raise RuntimeError("Packaged native plugins did not load:\n" + log_path.read_text())
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+
+
+def record_installation(stage, source):
+    result = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"],
+                            capture_output=True, text=True)
+    status = subprocess.run(["git", "-C", str(source), "status", "--porcelain"],
+                            capture_output=True, text=True)
+    files = {str(path.relative_to(stage)): hashlib.sha256(path.read_bytes()).hexdigest()
+             for path in sorted(stage.rglob("*")) if path.is_file()}
+    (stage / ".installed.json").write_text(json.dumps({
+        "installed_at": datetime.now(timezone.utc).isoformat(),
+        "source": str(source),
+        "commit": result.stdout.strip() if result.returncode == 0 else None,
+        "source_dirty": bool(status.stdout) if status.returncode == 0 else None,
+        "files": files,
+    }, indent=2) + "\n")
+
+
+def exchange(left, right):
+    # Linux renameat2 replaces the whole directory in one operation. There is no
+    # interval with missing files for the active shell's reload watcher.
+    library = ctypes.CDLL(None, use_errno=True)
+    rename = library.renameat2
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(left), -100, os.fsencode(right), 2):
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def activate(stage, destination, backup_root):
+    if not destination.exists():
+        os.replace(stage, destination)
+        return None
+    backup_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    backup = Path(tempfile.mkdtemp(
+        prefix=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-"), dir=backup_root))
+    shutil.copytree(destination, backup / "quickshell", symlinks=True)
+    exchange(stage, destination)
+    return backup / "quickshell"
+
+
+def main():
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    state_home = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--destination", type=Path, default=config_home / "quickshell")
+    parser.add_argument("--backup-root", type=Path, default=state_home / "quickshell-de/install-backups")
+    parser.add_argument("--skip-packages", action="store_true", help="use dependencies already installed; do not run pacman")
+    parser.add_argument("--skip-build", action="store_true", help="use native artifacts already built in this checkout")
+    parser.add_argument("--restore", type=Path, help="restore a previous installation directory")
+    parser.add_argument("--dry-run", action="store_true", help="show the operation without writing files")
+    args = parser.parse_args()
+    if not args.dry_run and os.geteuid() == 0:
+        parser.error("run as a regular user; only package installation uses sudo")
+    destination = args.destination.expanduser().absolute()
+    backup_root = args.backup_root.expanduser().resolve()
+    if destination.is_symlink():
+        parser.error("destination must be an independent directory, not a symlink")
+    destination = destination.resolve()
+    if destination == ROOT or destination in ROOT.parents or ROOT in destination.parents:
+        parser.error("source and installation directories must be separate")
+    if backup_root == destination or destination in backup_root.parents:
+        parser.error("backups must be outside the installation")
+    if any(character in str(destination) for character in "\n\r:" ):
+        parser.error("destination cannot contain newlines or an import-path separator")
+    if destination.exists() and not (destination / "shell.qml").is_file():
+        parser.error("existing destination is not a Quickshell installation")
+    restore = args.restore.expanduser().resolve() if args.restore else None
+    if restore and (not (restore / "shell.qml").is_file()
+                    or restore == destination or destination in restore.parents
+                    or restore in destination.parents):
+        parser.error("restore requires a separate backup containing shell.qml")
+    if restore:
+        expected_import = f"//@ pragma Env QML_IMPORT_PATH = {destination / 'integrations'}"
+        if expected_import not in (restore / "shell.qml").read_text().splitlines():
+            parser.error("this backup was generated for a different installation path")
+    if args.dry_run:
+        print(f"{'Restore ' + str(restore) if restore else 'Install ' + str(ROOT)} -> {destination}")
+        print(f"Previous installation backup: {backup_root}")
+        if not restore and not args.skip_packages:
+            install_dependencies(dry_run=True)
+        if not restore and not args.skip_build:
+            print("Build desktop modules in a temporary directory; remove build files afterwards.")
+        print("Greeter is optional and is not built or installed.")
+        print("User settings and session autostart are preserved.")
+        return
+    if not restore:
+        if not args.skip_packages:
+            install_dependencies()
+        subprocess.run([str(ROOT / "scripts/test-static")], check=True)
+    with temporary_directory(prefix="qs-install-") as workspace:
+        print(f"Temporary workspace: {workspace}", flush=True)
+        if not restore and not args.skip_build:
+            build_native(workspace)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with temporary_directory(prefix=".quickshell-stage-", directory=destination.parent) as stage:
+            if restore:
+                shutil.copytree(restore, stage, dirs_exist_ok=True, symlinks=True)
+                # Older backups predate the lock observer and remain restorable.
+                if (stage / LOCK_OBSERVER).exists():
+                    check_lock_observer(stage)
+                check_native_imports(stage, temporary_root=workspace)
+            else:
+                package(ROOT, stage, destination,
+                        native_root=ROOT if args.skip_build else workspace)
+                check_lock_observer(stage)
+                check_native_imports(stage, temporary_root=workspace)
+                record_installation(stage, ROOT)
+            backup = activate(stage, destination, backup_root)
+            print(f"Installed: {destination}")
+            if backup:
+                print(f"Previous installation: {backup}")
+    print("The running shell was not stopped. A new session loads all native library changes.")
+    print("After logging in on a TTY, run: uwsm start -e -D Hyprland hyprland.desktop")
+    print("With the Fish alias from your dotfiles: start")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        sys.exit(f"Installation failed: {error}")
+    except KeyboardInterrupt:
+        sys.exit("Installation interrupted.")

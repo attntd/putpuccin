@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""Run the checkout with local development settings and native import paths."""
+from pathlib import Path
+import os
+import shutil
+import subprocess
+import sys
+
+root = Path(__file__).resolve().parents[1]
+if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
+    print("Usage: scripts/dev-run [quickshell options]\n"
+          "Uses .dev/ for settings, data, state and cache.\n"
+          "Requires a test desktop session without a notification server.\n"
+          "For isolated component tests, see docs/development.md.")
+    sys.exit(0)
+
+owner = subprocess.run([
+    "busctl", "--user", "--timeout=2s", "call", "org.freedesktop.DBus",
+    "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner",
+    "s", "org.freedesktop.Notifications",
+], capture_output=True, text=True)
+if owner.returncode or owner.stdout.strip() != "b false":
+    sys.exit("Cannot start the development shell: the session bus is unavailable "
+             "or already has a notification server. Use a separate test desktop "
+             "session or the isolated tests described in docs/development.md.")
+
+env = os.environ.copy()
+for kind in ("CONFIG", "DATA", "STATE", "CACHE"):
+    path = root / ".dev" / kind.lower()
+    path.mkdir(parents=True, exist_ok=True)
+    env[f"XDG_{kind}_HOME"] = str(path)
+settings = Path(env["XDG_CONFIG_HOME"]) / "quickshell-de/settings.json"
+settings.parent.mkdir(parents=True, exist_ok=True)
+if not settings.exists():
+    shutil.copy2(root / "config/settings.example.json", settings)
+env["QML_IMPORT_PATH"] = str(root / "integrations") + (
+    os.pathsep + env["QML_IMPORT_PATH"] if env.get("QML_IMPORT_PATH") else "")
+os.execvpe("qs", ["qs", "-p", str(root), *sys.argv[1:]], env)

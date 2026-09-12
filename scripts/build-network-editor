@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""Build the NetworkManager profile editor against the installed Qt APIs."""
+from pathlib import Path
+import os, shutil, subprocess, tempfile
+
+root = Path(__file__).resolve().parents[1]
+source = root / 'integrations/NetworkManagerNative'
+destination = Path(os.environ.get('QS_BUILD_ROOT', str(root))) / 'integrations/NetworkManagerNative'
+with tempfile.TemporaryDirectory(prefix='qs-network-build-') as build:
+    subprocess.run(['qmake6', str(source / 'network.pro')], cwd=build, check=True)
+    subprocess.run(['make', '-j2'], cwd=build, check=True)
+    destination.mkdir(parents=True, exist_ok=True)
+    temporary = destination / '.libnetworkmanager.so.new'
+    shutil.copy2(Path(build) / 'libnetworkmanager.so', temporary)
+    os.replace(temporary, destination / 'libnetworkmanager.so')
+print('Built NetworkManager profile editor for the installed Qt.')

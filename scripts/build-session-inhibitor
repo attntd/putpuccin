@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+"""Build the reload-preserving logind inhibitor against public Qt APIs."""
+from pathlib import Path
+import os
+import shutil
+import subprocess
+import tempfile
+
+root = Path(__file__).resolve().parents[1]
+source = root / 'integrations/SessionNative'
+destination = Path(os.environ.get('QS_BUILD_ROOT', str(root))) / 'integrations/SessionNative'
+with tempfile.TemporaryDirectory(prefix='qs-session-build-') as build:
+    subprocess.run(['qmake6', str(source / 'session.pro')], cwd=build, check=True)
+    subprocess.run(['make', '-j2'], cwd=build, check=True)
+    destination.mkdir(parents=True, exist_ok=True)
+    temporary = destination / '.libsessioninhibitor.so.new'
+    shutil.copy2(Path(build) / 'libsessioninhibitor.so', temporary)
+    os.replace(temporary, destination / 'libsessioninhibitor.so')
+print('Built native Caffeinate inhibitor for the installed Qt.')

@@ -1,0 +1,100 @@
+#!/usr/bin/python
+"""Gate hypridle events using the shell's acknowledged Caffeinate state.
+
+Runs only on idle/resume events. Each IPC attempt has a one-second deadline.
+An explicit reload/startup response allows retries for at most three seconds.
+Failure falls back to normal idle behavior, including automatic locking.
+Explicit locking and before-sleep locking never pass through this helper.
+"""
+import fcntl
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+
+BLOCKERS = {"dim": "preventDisplaySleep", "display-off": "preventDisplaySleep",
+            "lock": "preventLock", "suspend": "preventSleep"}
+COMMANDS = {
+    "dim": ["brightnessctl", "-s", "set", "10%"],
+    "display-off": ["hyprctl", "dispatch", 'hl.dsp.dpms({ action = "disable" })'],
+    "display-resume": ["hyprctl", "dispatch", 'hl.dsp.dpms({ action = "enable" })'],
+    "lock": ["loginctl", "lock-session"],
+    "suspend": ["systemctl", "suspend-then-hibernate"],
+}
+
+
+def blocked(action):
+    config = Path(__file__).resolve().parents[1]
+    started = time.monotonic()
+    deadline = started + 1
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            result = subprocess.run(["qs", "ipc", "-p", str(config), "call", "caffeinate", "status"],
+                                    capture_output=True, text=True, timeout=min(1, remaining), check=True)
+            # QS may close an IPC request without a reply while replacing its
+            # QML generation, or explicitly report that it is not ready yet.
+            # Only those responses allow a bounded handoff grace period.
+            if result.stdout.strip() in ("", "Not ready to accept queries yet."):
+                deadline = started + 3
+                time.sleep(min(.1, max(0, deadline - time.monotonic())))
+                continue
+            state = json.loads(result.stdout)
+            return isinstance(state, dict) and state.get("active") is True and state.get(BLOCKERS[action]) is True
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+
+
+def run(command):
+    try:
+        return subprocess.run(command, timeout=5, check=False).returncode
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"caffeinate-idle: {error}", file=sys.stderr)
+        return 1
+
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] not in {*BLOCKERS, "dim-resume", "display-resume"}:
+        return 2
+    return dispatch(sys.argv[1])
+
+
+def dispatch(action):
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    # Hypridle launches timeout/resume commands asynchronously. Serialize them
+    # so activity during the IPC query restores the display after dim/off ends.
+    with (runtime / "quickshell-caffeinate-idle.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return handle(action, runtime / "quickshell-caffeinate-dimmed")
+
+
+def handle(action, marker):
+    if action in BLOCKERS and blocked(action):
+        return 0
+    if action in ("dim-resume", "display-resume"):
+        result = run(COMMANDS[action]) if action == "display-resume" else 0
+        # Only restore brightness when this idle cycle actually dimmed it.
+        # Unlink claims restoration once even when both resume events fire.
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            return result
+        return run(["brightnessctl", "-r"]) or result
+    result = run(COMMANDS[action])
+    if action == "dim" and result == 0:
+        try:
+            marker.touch(mode=0o600)
+        except OSError as error:
+            print(f"caffeinate-idle: {error}", file=sys.stderr)
+            run(["brightnessctl", "-r"])
+            return 1
+    return result
+
+
+if __name__ == "__main__":
+    sys.exit(main())

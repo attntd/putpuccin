@@ -1,0 +1,34 @@
+#!/bin/sh
+set -eu
+
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+project_dir="$(dirname -- "$script_dir")"
+qmlformat_bin="$(command -v qmlformat 2>/dev/null || true)"
+
+if [ -z "$qmlformat_bin" ] && [ -x /usr/lib/qt6/bin/qmlformat ]; then
+    qmlformat_bin=/usr/lib/qt6/bin/qmlformat
+fi
+
+jq empty "$project_dir/config/settings.example.json"
+jq empty "$project_dir/config/settings.schema.json"
+
+for script in "$project_dir"/scripts/*; do
+    [ -f "$script" ] || continue
+    case "$(head -n 1 "$script")" in
+        *python*) python -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$script" ;;
+        *) sh -n "$script" ;;
+    esac
+done
+
+if [ -n "$qmlformat_bin" ]; then
+    find "$project_dir" -type f -name '*.qml' -exec "$qmlformat_bin" {} \; >/dev/null
+else
+    printf '%s\n' 'warning: qmlformat is unavailable; QML parse check skipped' >&2
+fi
+
+if grep -R -n -E '#[0-9a-fA-F]{6,8}' "$project_dir/components" "$project_dir/modules" "$project_dir/popups" "$project_dir/services"; then
+    printf '%s\n' 'error: color literals must live in core/Theme.qml' >&2
+    exit 1
+fi
+
+printf '%s\n' 'Static checks passed.'

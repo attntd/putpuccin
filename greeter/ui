@@ -1,0 +1,14 @@
+#!/usr/bin/python3
+"""A successful greetd handoff exits the whole greeter, including its compositor."""
+import os
+import resource
+import subprocess
+
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+os.umask(0o077)
+try:
+    subprocess.run(['/usr/bin/qs', '-p', '/usr/local/share/quickshell-greeter', '--no-color'], check=False)
+finally:
+    # Also leave on a UI crash: greetd will restart its default session and never
+    # start a user session unless its own PAM/account checks and start_session passed.
+    subprocess.run(['/usr/bin/hyprctl', 'dispatch', 'hl.dsp.exit()'], check=False, timeout=5)

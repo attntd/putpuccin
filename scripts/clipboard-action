@@ -1,0 +1,68 @@
+#!/bin/sh
+set -eu
+
+operation="${1:-}"
+entry_id="${2:-}"
+
+validate_id() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+decode_to_file() {
+    validate_id "$entry_id"
+    runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
+    decoded_file="$(mktemp "${runtime_dir}/quickshell-de-decoded.XXXXXX")"
+    trap 'rm -f -- "$decoded_file"' EXIT
+    trap 'exit 1' HUP INT TERM
+    printf '%s\t' "$entry_id" | timeout --kill-after=1s 5s cliphist decode > "$decoded_file"
+}
+
+prune_thumbnails() {
+    thumbnail_dir="${QS_CLIP_THUMB_DIR:?QS_CLIP_THUMB_DIR is required}"
+    keep_ids=",${1:-},"
+    # Only our numeric cache files, never unrelated files or the directory.
+    for candidate in "$thumbnail_dir"/*; do
+        candidate_id="${candidate##*/}"
+        validate_id "$candidate_id" || continue
+        case "$keep_ids" in
+            *",${candidate_id},"*) ;;
+            *) rm -f -- "$candidate" ;;
+        esac
+    done
+}
+
+case "$operation" in
+    copy)
+        decode_to_file
+        mime_type="$(file --brief --mime-type -- "$decoded_file")"
+        timeout --kill-after=1s 5s wl-copy --type "$mime_type" < "$decoded_file"
+        ;;
+    delete)
+        validate_id "$entry_id"
+        printf '%s\t' "$entry_id" | timeout --kill-after=1s 5s cliphist delete
+        rm -f -- "${QS_CLIP_THUMB_DIR:?QS_CLIP_THUMB_DIR is required}/${entry_id}"
+        ;;
+    wipe)
+        timeout --kill-after=1s 5s cliphist wipe
+        prune_thumbnails ""
+        ;;
+    prune)
+        case "$entry_id" in *[!0-9,]*) exit 64 ;; esac
+        prune_thumbnails "$entry_id"
+        ;;
+    thumbnail)
+        decode_to_file
+        thumbnail_dir="${QS_CLIP_THUMB_DIR:?QS_CLIP_THUMB_DIR is required}"
+        mkdir -p -- "$thumbnail_dir"
+        thumbnail_path="${thumbnail_dir}/${entry_id}"
+        mv -- "$decoded_file" "$thumbnail_path"
+        printf '%s\t%s\n' "$entry_id" "$thumbnail_path"
+        ;;
+    *)
+        printf '%s\n' "Unsupported clipboard operation" >&2
+        exit 64
+        ;;
+esac

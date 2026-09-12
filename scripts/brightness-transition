@@ -1,0 +1,81 @@
+#!/usr/bin/python
+"""Short-lived logind transition; stdin retargets a single active animation."""
+import json
+import math
+import os
+from pathlib import Path
+import re
+import select
+import sys
+import time
+
+
+def bounded(value):
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError("Invalid brightness")
+    return max(1, min(100, value))
+
+
+def interpolate(start, target, elapsed, duration):
+    progress = min(1, elapsed / duration) if duration else 1
+    return round(start + (target - start) * (1 - (1 - progress) ** 3))
+
+
+def transition(device, target, duration, sys_root=Path('/sys/class/backlight'), apply=None):
+    path = sys_root / device
+    maximum = int((path / 'max_brightness').read_text())
+    current = int((path / 'brightness').read_text())
+    if maximum <= 0:
+        raise ValueError('Invalid backlight range')
+    if apply is None:
+        import dbus
+        bus = dbus.SystemBus()
+        session = bus.get_object('org.freedesktop.login1', '/org/freedesktop/login1/session/auto', introspect=False)
+        set_brightness = session.get_dbus_method('SetBrightness', 'org.freedesktop.login1.Session')
+        apply = lambda raw: set_brightness('backlight', device, dbus.UInt32(raw), timeout=1)
+    target_raw = max(1, math.floor(maximum * bounded(target) / 100 + .5))
+    start = current
+    began = time.monotonic()
+    buffer = b''
+    last_input = began
+    input_open = True
+    os.set_blocking(sys.stdin.fileno(), False)
+    # At most one D-Bus call per frame; no subprocesses or idle polling daemon.
+    while True:
+        now = time.monotonic()
+        next_raw = interpolate(start, target_raw, now - began, duration)
+        if next_raw != current:
+            apply(next_raw)
+            current = next_raw
+            print(json.dumps({'raw': current, 'maximum': maximum}), flush=True)
+        done = now - began >= duration
+        if done and (not input_open or now - last_input >= duration + .12):
+            print(json.dumps({'raw': current, 'maximum': maximum}), flush=True)
+            return
+        wait = max(.001, duration + .12 - (now - last_input)) if done else 1 / 60
+        readable, _, _ = select.select([sys.stdin] if input_open else [], [], [], wait)
+        if readable:
+            data = os.read(sys.stdin.fileno(), 4096)
+            if not data:
+                input_open = False
+                continue
+            buffer += data
+            if len(buffer) > 8192:
+                raise ValueError('Brightness input too long')
+            lines = buffer.split(b'\n')
+            buffer = lines.pop()
+            if lines:
+                target_raw = max(1, math.floor(maximum * bounded(lines[-1]) / 100 + .5))
+                start = current
+                began = last_input = time.monotonic()
+
+
+if __name__ == '__main__':
+    try:
+        if len(sys.argv) != 4 or not re.fullmatch(r'[A-Za-z0-9_.:-]+', sys.argv[1]):
+            raise ValueError('Invalid backlight device')
+        transition(sys.argv[1], bounded(sys.argv[2]), max(0, min(.5, float(sys.argv[3]) / 1000)))
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

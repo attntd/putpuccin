@@ -1,0 +1,4 @@
+module qs.modules.screenshot
+Screenshot 1.0 Screenshot.qml
+ScreenshotCapture 1.0 ScreenshotCapture.qml
+ScreenshotOverlay 1.0 ScreenshotOverlay.qml

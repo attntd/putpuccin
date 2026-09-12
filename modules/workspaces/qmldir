@@ -1,0 +1,3 @@
+module qs.modules.workspaces
+WorkspaceSwitcher 1.0 WorkspaceSwitcher.qml
+WorkspaceTile 1.0 WorkspaceTile.qml

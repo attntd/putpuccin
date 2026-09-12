@@ -1,0 +1,20 @@
+module qs.modules.statusbar
+
+AudioModule 1.0 AudioModule.qml
+BarIsland 1.0 BarIsland.qml
+BarModuleHost 1.0 BarModuleHost.qml
+BatteryModule 1.0 BatteryModule.qml
+BluetoothModule 1.0 BluetoothModule.qml
+BrightnessModule 1.0 BrightnessModule.qml
+ClipboardModule 1.0 ClipboardModule.qml
+ClockModule 1.0 ClockModule.qml
+ContextModule 1.0 ContextModule.qml
+LauncherModule 1.0 LauncherModule.qml
+MediaModule 1.0 MediaModule.qml
+NetworkModule 1.0 NetworkModule.qml
+NotificationsModule 1.0 NotificationsModule.qml
+PowerModule 1.0 PowerModule.qml
+StatusBar 1.0 StatusBar.qml
+TrayModule 1.0 TrayModule.qml
+WorkspacesModule 1.0 WorkspacesModule.qml
+QuickSettingsModule 1.0 QuickSettingsModule.qml

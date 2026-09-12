@@ -1,0 +1,40 @@
+#!/usr/bin/python3
+"""Start only the root-owned greeter compositor with a small environment."""
+import os
+from pathlib import Path
+import pwd
+import resource
+import stat
+
+user = pwd.getpwuid(os.getuid())
+if user.pw_name != 'greeter' or os.geteuid() == 0:
+    raise SystemExit('The greeter must run as its dedicated unprivileged account.')
+runtime = Path(os.environ.get('XDG_RUNTIME_DIR', ''))
+if not runtime.is_absolute() or not runtime.is_dir():
+    raise SystemExit('Missing private greeter runtime.')
+info = runtime.stat()
+if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+    raise SystemExit('Unsafe greeter runtime.')
+socket = os.environ.get('GREETD_SOCK', '')
+if not Path(socket).is_absolute() or not stat.S_ISSOCK(os.stat(socket).st_mode):
+    raise SystemExit('Missing greetd socket.')
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+os.umask(0o077)
+env = {'PATH': '/usr/bin', 'HOME': user.pw_dir, 'USER': user.pw_name, 'LOGNAME': user.pw_name,
+    'LANG': 'pl_PL.UTF-8', 'LC_ALL': 'pl_PL.UTF-8', 'GREETD_SOCK': socket,
+    'XDG_RUNTIME_DIR': str(runtime), 'XDG_CONFIG_HOME': str(runtime / 'config'),
+    'XDG_STATE_HOME': str(runtime / 'state'), 'XDG_CACHE_HOME': str(runtime / 'cache'),
+    'XDG_DATA_HOME': str(runtime / 'data'), 'QT_QPA_PLATFORMTHEME': '',
+    'QT_LOGGING_RULES': '*.debug=false', 'QML_DISABLE_DISK_CACHE': '1',
+    'HYPRLAND_NO_SD_VARS': '1', 'HYPRLAND_NO_SD_NOTIFY': '1',
+    'HYPRLAND_NO_CRASHREPORTER': '1', 'HYPRLAND_NO_RT': '1',
+    'XDG_SESSION_TYPE': 'wayland', 'XDG_SESSION_DESKTOP': 'quickshell-greeter'}
+# Hyprland sets XDG_CURRENT_DESKTOP=Hyprland itself. The frontend's identity
+# remains in XDG_SESSION_DESKTOP; it is not a different compositor.
+# These values originate in greetd/PAM and identify the logind session/seat.
+for key in ('XDG_SESSION_ID', 'XDG_SEAT', 'XDG_VTNR'):
+    value = os.environ.get(key, '')
+    if value and len(value) <= 128 and all(c.isalnum() or c in '_-' for c in value):
+        env[key] = value
+os.execve('/usr/bin/dbus-run-session', ['dbus-run-session', '--', '/usr/bin/start-hyprland',
+    '--no-nixgl', '--path', '/usr/local/libexec/quickshell-greeter/compositor'], env)

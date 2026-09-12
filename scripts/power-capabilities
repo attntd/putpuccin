@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+can_call() {
+    method="$1"
+    value="$(busctl --system call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager "$method" 2>/dev/null || true)"
+    case "$value" in
+        *'"yes"'*) printf '%s' yes ;;
+        *'"challenge"'*) printf '%s' challenge ;;
+        *) printf '%s' no ;;
+    esac
+}
+
+printf 'lock=yes\n'
+printf 'suspend=%s\n' "$(can_call CanSuspend)"
+printf 'hibernate=%s\n' "$(can_call CanHibernate)"
+printf 'logout=yes\n'
+printf 'reboot=%s\n' "$(can_call CanReboot)"
+printf 'poweroff=%s\n' "$(can_call CanPowerOff)"

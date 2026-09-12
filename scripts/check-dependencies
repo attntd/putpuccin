@@ -1,0 +1,126 @@
+#!/bin/sh
+set -u
+
+missing=0
+
+check_required() {
+    if command -v "$1" >/dev/null 2>&1; then
+        printf 'ok       %s\n' "$1"
+    else
+        printf 'missing  %s (%s)\n' "$1" "$2"
+        missing=1
+    fi
+}
+
+check_optional() {
+    if command -v "$1" >/dev/null 2>&1; then
+        printf 'ok       %s\n' "$1"
+    else
+        printf 'optional %s (%s)\n' "$1" "$2"
+    fi
+}
+
+printf '%s\n' 'Core'
+check_required quickshell quickshell
+check_required qs quickshell
+check_required hyprctl hyprland
+check_required hyprlock 'hyprlock (independent session-lock fallback)'
+check_required fd fd
+check_required xdg-open xdg-utils
+check_required wl-paste wl-clipboard
+check_required wl-copy wl-clipboard
+check_required notify-send 'libnotify (screenshot save notification)'
+check_required cliphist cliphist
+check_required wpctl wireplumber
+check_required brightnessctl brightnessctl
+check_required python python
+if /usr/bin/python -c 'import dbus' 2>/dev/null; then
+    printf '%s\n' 'ok       python-dbus (smooth backlight)'
+else
+    printf '%s\n' 'missing  python-dbus (smooth backlight)'
+    missing=1
+fi
+check_required systemctl systemd
+check_required busctl systemd
+check_required loginctl systemd
+check_required file file
+check_required udevadm systemd
+check_required timeout coreutils
+check_required fc-match fontconfig
+check_required qmake6 qt6-base
+
+printf '\n%s\n' 'Qt modules'
+qml_dir="$(qmake6 -query QT_INSTALL_QML 2>/dev/null || true)"
+if [ -n "$qml_dir" ] && [ -f "$qml_dir/QtMultimedia/qmldir" ]; then
+    printf '%s\n' 'ok       QtMultimedia (notification sounds)'
+else
+    printf '%s\n' 'missing  QtMultimedia (qt6-multimedia)'
+    missing=1
+fi
+
+printf '\n%s\n' 'Optional features'
+check_optional satty 'satty (optional screenshot editor)'
+check_optional fprintd-list 'fprintd (fingerprint unlock)'
+check_optional hypridle 'hypridle (idle actions; requires configuration)'
+check_optional magick 'imagemagick (screenshot tests and legacy crop helper)'
+
+printf '\n%s\n' 'Versions'
+quickshell --version 2>/dev/null || true
+hypr_version="$(hyprctl version 2>/dev/null | sed -n '/^Hyprland/p' | head -n 1)"
+if [ -n "$hypr_version" ]; then
+    printf '%s\n' "$hypr_version"
+elif command -v pacman >/dev/null 2>&1; then
+    pacman -Q hyprland 2>/dev/null || true
+fi
+printf 'Qt %s\n' "$(qmake6 -query QT_VERSION 2>/dev/null || qtpaths6 --qt-version 2>/dev/null || printf unknown)"
+
+if command -v fc-match >/dev/null 2>&1; then
+    font_match="$(fc-match 'JetBrainsMono Nerd Font' -f '%{family}\n' 2>/dev/null | head -n 1)"
+    case "$font_match" in
+        *JetBrainsMono*Nerd*) printf 'ok       font: %s\n' "$font_match" ;;
+        *) printf 'missing  JetBrainsMono Nerd Font (ttf-jetbrains-mono-nerd)\n'; missing=1 ;;
+    esac
+fi
+
+printf '\n%s\n' 'Services (informational)'
+for unit in NetworkManager bluetooth upower power-profiles-daemon; do
+    state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    printf '%-8s %s\n' "${state:-unknown}" "$unit"
+done
+for unit in pipewire wireplumber; do
+    state="$(systemctl --user is-active "$unit" 2>/dev/null || true)"
+    printf '%-8s %s (user)\n' "${state:-unknown}" "$unit"
+done
+
+project_dir="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+if "$project_dir/integrations/LockObserver/lock-observer" --version >/dev/null 2>&1; then
+    printf '%s\n' 'ok       native session lock observer'
+else
+    printf '%s\n' 'missing  native session lock observer: run python scripts/build-lock-observer'
+    missing=1
+fi
+if [ -f "$project_dir/integrations/ScreenshotNative/libscreenshotexport.so" ]; then
+    printf '%s\n' 'ok       native screenshot exporter'
+else
+    printf '%s\n' 'missing  native screenshot exporter: run python scripts/build-screenshot-exporter'
+    missing=1
+fi
+if [ -f "$project_dir/integrations/BluetoothNative/libbluetoothagent.so" ]; then
+    printf '%s\n' 'ok       native Bluetooth pairing agent'
+else
+    printf '%s\n' 'missing  native Bluetooth pairing agent: run python scripts/build-bluetooth-agent'
+    missing=1
+fi
+if [ -f "$project_dir/integrations/SessionNative/libsessioninhibitor.so" ]; then
+    printf '%s\n' 'ok       native Caffeinate inhibitor'
+else
+    printf '%s\n' 'missing  native Caffeinate inhibitor: run python scripts/build-session-inhibitor'
+    missing=1
+fi
+if [ -f "$project_dir/integrations/NetworkManagerNative/libnetworkmanager.so" ]; then
+    printf '%s\n' 'ok       native NetworkManager settings and VPN'
+else
+    printf '%s\n' 'missing  native NetworkManager settings and VPN: run python scripts/build-network-editor'
+    missing=1
+fi
+exit "$missing"

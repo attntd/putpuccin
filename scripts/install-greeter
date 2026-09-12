@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""Package separately from the user shell; activate root-owned files for next boot."""
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+DESTINATION = Path('/usr/local/share/quickshell-greeter')
+EXECUTABLES = Path('/usr/local/libexec/quickshell-greeter')
+CONFIG = Path('/etc/greetd/config.toml')
+PAM = Path('/etc/pam.d/quickshell-greeter')
+DROPIN = Path('/etc/systemd/system/greetd.service.d/quickshell.conf')
+DISPLAY_MANAGER = Path('/etc/systemd/system/display-manager.service')
+BACKUPS = Path('/var/lib/quickshell-greeter/backups')
+
+
+def targets():
+    return [DESTINATION, EXECUTABLES, CONFIG, PAM, DROPIN]
+
+
+def restore_files(backup, previous):
+    for index, target in enumerate(targets()):
+        if target.is_dir(): shutil.rmtree(target)
+        elif target.exists() or target.is_symlink(): target.unlink()
+        if previous[str(target)]:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            saved = backup / str(index)
+            if saved.is_dir(): shutil.copytree(saved, target)
+            else: shutil.copy2(saved, target)
+    subprocess.run(['systemctl', 'daemon-reload'], check=True)
+    subprocess.run(['systemctl', 'enable' if previous['enabled'] else 'disable', 'greetd.service'], check=True)
+
+
+def restore(backup):
+    if os.geteuid() != 0:
+        raise PermissionError('System greeter restoration requires root')
+    if not backup.resolve().is_relative_to(BACKUPS) or backup.is_symlink() or backup.stat().st_uid != 0:
+        raise ValueError('Expected a root-owned greeter backup')
+    previous = json.loads((backup / 'previous.json').read_text())
+    if set(previous) != {str(target) for target in targets()} | {'enabled'}:
+        raise ValueError('Invalid backup metadata')
+    restore_files(backup, previous)
+    print('Restored for next boot:', backup)
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def package(destination, default_user, wallpaper, avatars, fingerprints):
+    destination.mkdir(parents=True, exist_ok=False)
+    for name in ('shell.qml', 'GreeterConfig.qml', 'GreeterService.qml', 'GreeterWindow.qml',
+                 'qmldir', 'users', 'session', 'ui', 'compositor',
+                 'greetd.toml', 'pam.conf', 'hyprland.lua'):
+        shutil.copy2(ROOT / 'greeter' / name, destination / name)
+    (destination / 'shell.qml').write_text(
+        '//@ pragma Env QML_IMPORT_PATH = ' + str(DESTINATION / 'integrations') + '\n'
+        + (destination / 'shell.qml').read_text())
+    (destination / 'core').mkdir()
+    for name in ('Theme', 'Metrics', 'Motion', 'Strings', 'Icons'):
+        shutil.copy2(ROOT / 'core' / (name + '.qml'), destination / 'core' / (name + '.qml'))
+    shutil.copy2(ROOT / 'greeter/Settings.qml', destination / 'core/Settings.qml')
+    (destination / 'core/qmldir').write_text('module qs.core\n' + ''.join(
+        'singleton ' + name + ' 1.0 ' + name + '.qml\n'
+        for name in ('Theme', 'Metrics', 'Motion', 'Strings', 'Icons', 'Settings')))
+    (destination / 'components').mkdir()
+    shutil.copy2(ROOT / 'components/SessionAuthView.qml', destination / 'components/SessionAuthView.qml')
+    (destination / 'components/qmldir').write_text('module qs.components\n'
+        'SessionAuthView 1.0 SessionAuthView.qml\n')
+    module = destination / 'integrations/GreeterNative'
+    module.mkdir(parents=True)
+    for name in ('qmldir', 'libgreetdclient.so', 'pam_greeter_gate.so'):
+        shutil.copy2(ROOT / 'integrations/GreeterNative' / name, module / name)
+    (destination / 'assets/avatars').mkdir(parents=True)
+    assert wallpaper.is_file() and wallpaper.stat().st_size <= 32 * 1024 * 1024
+    shutil.copy2(wallpaper, destination / 'assets/wallpaper')
+    users = []
+    for user in pwd.getpwall():
+        if not 1000 <= user.pw_uid < 60000 or user.pw_name in ('root', 'greeter'):
+            continue
+        if not re.fullmatch(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}', user.pw_name):
+            continue
+        users.append({'username': user.pw_name, 'fingerprint': user.pw_name in fingerprints})
+        if user.pw_name in avatars:
+            avatar = avatars[user.pw_name]
+            assert avatar.is_file() and avatar.stat().st_size <= 8 * 1024 * 1024
+            shutil.copy2(avatar, destination / 'assets/avatars' / (user.pw_name + '.png'))
+    assert any(user['username'] == default_user for user in users), 'Unknown default login user'
+    (destination / 'config.json').write_text(json.dumps({
+        'version': 1, 'defaultUser': default_user, 'users': users}, indent=2) + '\n')
+    for path in destination.rglob('*'):
+        if path.is_file():
+            path.chmod(0o755 if path.name in ('session', 'ui', 'users', 'compositor') else 0o644)
+    manifest = {str(path.relative_to(destination)): digest(path)
+                for path in sorted(destination.rglob('*')) if path.is_file()}
+    (destination / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+
+
+def check_bundle(source):
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError('Expected a regular package directory')
+    manifest = json.loads((source / 'manifest.json').read_text())
+    if not isinstance(manifest, dict) or not all(isinstance(key, str)
+            and isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value)
+            for key, value in manifest.items()):
+        raise ValueError('Invalid package manifest')
+    allowed = {'shell.qml', 'GreeterConfig.qml', 'GreeterService.qml', 'GreeterWindow.qml',
+        'qmldir', 'users', 'session', 'ui', 'compositor',
+        'greetd.toml', 'pam.conf', 'hyprland.lua', 'config.json',
+        'core/qmldir', 'components/qmldir', 'components/SessionAuthView.qml',
+        'integrations/GreeterNative/qmldir', 'integrations/GreeterNative/libgreetdclient.so',
+        'integrations/GreeterNative/pam_greeter_gate.so', 'assets/wallpaper'}
+    allowed.update('core/' + name + '.qml' for name in ('Theme', 'Metrics', 'Motion', 'Strings', 'Icons', 'Settings'))
+    actual = set()
+    for path in source.rglob('*'):
+        if path.is_symlink():
+            raise ValueError('Package symlinks are forbidden')
+        if not path.is_dir() and not path.is_file():
+            raise ValueError('Special package files are forbidden')
+        if path.is_file() and path != source / 'manifest.json':
+            name = str(path.relative_to(source))
+            if name not in allowed and not re.fullmatch(r'assets/avatars/[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}\.png', name):
+                raise ValueError('Unexpected file in greeter package: ' + name)
+            if path.stat().st_size > 32 * 1024 * 1024 or manifest.get(name) != digest(path):
+                raise ValueError('Invalid checksum/size: ' + name)
+            actual.add(name)
+    if actual != set(manifest) or not allowed.issubset(actual):
+        raise ValueError('Incomplete greeter package')
+    binary = (source / 'integrations/GreeterNative/libgreetdclient.so').read_bytes()
+    if b'QUICKSHELL_GREETER_ROOT_PEER_ONLY' not in binary or b'QUICKSHELL_GREETER_TEST_ONLY_PEER' in binary:
+        raise ValueError('Refusing a test or unrecognized greetd transport')
+    return manifest
+
+
+def activate(source):
+    if os.geteuid() != 0:
+        raise PermissionError('System greeter installation requires root')
+    check_bundle(source)
+    for name in ('greetd', 'Hyprland', 'start-hyprland', 'uwsm', 'qs'):
+        if not shutil.which(name):
+            raise RuntimeError('Missing required program: ' + name)
+    user = pwd.getpwnam('greeter')
+    if user.pw_uid == 0:
+        raise RuntimeError('The greeter account must be unprivileged')
+    display_manager = DISPLAY_MANAGER
+    if display_manager.exists() and display_manager.resolve().name != 'greetd.service':
+        raise RuntimeError('Another display manager is configured')
+    backup = BACKUPS / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    backup.mkdir(parents=True, mode=0o700)
+    previous = {'enabled': subprocess.run(['systemctl', 'is-enabled', '--quiet', 'greetd.service']).returncode == 0}
+    for index, target in enumerate(targets()):
+        if target.is_symlink():
+            raise ValueError('System greeter target must not be a symlink: ' + str(target))
+        previous[str(target)] = target.exists()
+        if target.exists():
+            saved = backup / str(index)
+            if target.is_dir(): shutil.copytree(target, saved)
+            else: shutil.copy2(target, saved)
+    (backup / 'previous.json').write_text(json.dumps(previous, indent=2))
+    DESTINATION.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix='.quickshell-greeter-', dir=DESTINATION.parent))
+    mutated = False
+    try:
+        shutil.copytree(source, stage, dirs_exist_ok=True)
+        check_bundle(stage)
+        for path in [stage, *stage.rglob('*')]:
+            os.chown(path, 0, 0)
+            path.chmod(0o755 if path.is_dir() or path.name in ('session', 'ui', 'users', 'compositor') else 0o644)
+        mutated = True
+        if DESTINATION.exists():
+            # The frontend never watches files; upgrades take effect next launch.
+            os.rename(DESTINATION, backup / 'previous-runtime')
+        os.rename(stage, DESTINATION)
+        # Replace this dedicated directory so removed helpers cannot survive an upgrade.
+        if EXECUTABLES.exists(): shutil.rmtree(EXECUTABLES)
+        EXECUTABLES.mkdir(parents=True)
+        for name in ('session', 'ui', 'compositor'):
+            shutil.copy2(DESTINATION / name, EXECUTABLES / name)
+            (EXECUTABLES / name).chmod(0o755)
+        CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(DESTINATION / 'greetd.toml', CONFIG)
+        shutil.copy2(DESTINATION / 'pam.conf', PAM)
+        dropin = DROPIN
+        dropin.parent.mkdir(parents=True, exist_ok=True)
+        dropin.write_text('[Service]\nLimitCORE=0\nUMask=0077\n')
+        subprocess.run(['systemctl', 'daemon-reload'], check=True)
+        # Never --now: tty1 belongs to the user's current running desktop.
+        subprocess.run(['systemctl', 'enable', 'greetd.service'], check=True)
+    except Exception:
+        if mutated:
+            restore_files(backup, previous)
+        raise
+    finally:
+        if stage.exists(): shutil.rmtree(stage)
+    print('Greeter installed for next boot. Current session left running.')
+    print('Backup:', backup)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--stage', type=Path)
+    mode.add_argument('--activate', type=Path)
+    mode.add_argument('--check', type=Path)
+    mode.add_argument('--restore', type=Path)
+    parser.add_argument('--default-user')
+    parser.add_argument('--wallpaper', type=Path)
+    parser.add_argument('--avatar', action='append', default=[], metavar='USER=PATH')
+    parser.add_argument('--fingerprint-user', action='append', default=[])
+    args = parser.parse_args()
+    if args.restore:
+        restore(args.restore)
+    elif args.activate:
+        activate(args.activate)
+    elif args.check:
+        print('Validated', len(check_bundle(args.check)), 'greeter files')
+    else:
+        if not args.default_user or not args.wallpaper:
+            parser.error('--stage requires --default-user and --wallpaper')
+        avatars = {key: Path(value) for key, value in (item.split('=', 1) for item in args.avatar)}
+        package(args.stage, args.default_user, args.wallpaper, avatars, set(args.fingerprint_user))
+        check_bundle(args.stage)
+        print('Staged:', args.stage)
+
+
+if __name__ == '__main__':
+    main()

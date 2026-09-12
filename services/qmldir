@@ -1,0 +1,20 @@
+module qs.services
+singleton AuthenticationService 1.0 AuthenticationService.qml
+singleton CaffeinateService 1.0 CaffeinateService.qml
+singleton AudioService 1.0 AudioService.qml
+singleton BluetoothService 1.0 BluetoothService.qml
+singleton BrightnessService 1.0 BrightnessService.qml
+singleton ClipboardService 1.0 ClipboardService.qml
+singleton HyprlandService 1.0 HyprlandService.qml
+singleton MediaService 1.0 MediaService.qml
+singleton ModuleActions 1.0 ModuleActions.qml
+singleton NetworkService 1.0 NetworkService.qml
+singleton NotificationService 1.0 NotificationService.qml
+singleton PowerService 1.0 PowerService.qml
+singleton SystemActions 1.0 SystemActions.qml
+
+NotificationHistory 1.0 NotificationHistory.qml
+singleton WallpaperService 1.0 WallpaperService.qml
+singleton OsdService 1.0 OsdService.qml
+singleton LockService 1.0 LockService.qml
+singleton ScreenshotService 1.0 ScreenshotService.qml

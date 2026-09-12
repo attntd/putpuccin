@@ -1,0 +1,29 @@
+#!/usr/bin/python3
+"""Use Hyprland's watchdog, but never expose its recovery desktop as greeter."""
+import os
+import stat
+import subprocess
+import sys
+
+
+def main(args):
+    # start-hyprland adds --safe-mode after a compositor crash. Exit before
+    # starting recovery: greetd owns restarting the unauthenticated frontend.
+    if '--safe-mode' in args:
+        raise SystemExit('Greeter recovery belongs to greetd; refusing the emergency desktop.')
+    if len(args) != 2 or args[0] != '--watchdog-fd' or not args[1].isdigit():
+        raise SystemExit('The greeter compositor requires start-hyprland.')
+    descriptor = int(args[1])
+    if descriptor <= 2 or not stat.S_ISFIFO(os.fstat(descriptor).st_mode):
+        raise SystemExit('Invalid watchdog pipe.')
+    config = '/usr/local/share/quickshell-greeter/hyprland.lua'
+    # A broken Lua configuration otherwise installs emergency terminal binds.
+    result = subprocess.run(['/usr/bin/Hyprland', '--verify-config', '-c', config],
+                            timeout=15, check=False)
+    if result.returncode:
+        raise SystemExit('Invalid greeter compositor configuration; refusing to start.')
+    os.execv('/usr/bin/Hyprland', ['Hyprland', '--watchdog-fd', str(descriptor), '-c', config])
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

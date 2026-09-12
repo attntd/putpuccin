@@ -1,0 +1,6 @@
+#!/usr/bin/python
+"""Hold systemd-inhibit indefinitely, until the shell closes its input pipe."""
+import sys
+
+print("ready", flush=True)
+sys.stdin.buffer.read()

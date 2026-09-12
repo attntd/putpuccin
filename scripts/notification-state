@@ -1,0 +1,30 @@
+#!/bin/sh
+# One bounded startup operation; native FileView handles subsequent atomic writes.
+exec python - "$@" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+import time
+
+os.umask(0o077)
+path = Path(sys.argv[1])
+path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+os.chmod(path.parent, 0o700)
+recovered = False
+if path.exists():
+    os.chmod(path, 0o600)
+    try:
+        if path.stat().st_size > 128 * 1024 * 1024:
+            raise ValueError('oversized history')
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict) or data.get('schemaVersion') != 1 or not isinstance(data.get('records'), list):
+            raise ValueError('invalid history')
+    except (ValueError, UnicodeError):
+        path.rename(path.with_name(path.name + '.corrupt-' + str(time.time_ns())))
+        recovered = True
+if not path.exists():
+    with path.open('x') as stream:
+        json.dump(dict(schemaVersion=1, records=[], dnd=False, hasNew=False), stream)
+print(json.dumps(dict(recovered=recovered)))
+PY

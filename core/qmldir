@@ -1,0 +1,8 @@
+module qs.core
+singleton Icons 1.0 Icons.qml
+singleton Metrics 1.0 Metrics.qml
+singleton Motion 1.0 Motion.qml
+singleton Settings 1.0 Settings.qml
+singleton Strings 1.0 Strings.qml
+singleton SurfaceManager 1.0 SurfaceManager.qml
+singleton Theme 1.0 Theme.qml

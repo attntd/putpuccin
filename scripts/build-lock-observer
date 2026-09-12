@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""Build the short-lived compositor lock observer against public Wayland APIs."""
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import tempfile
+
+root = Path(__file__).resolve().parents[1]
+source = root / "integrations/LockObserver"
+destination = Path(os.environ.get("QS_BUILD_ROOT", str(root))) / "integrations/LockObserver"
+with tempfile.TemporaryDirectory(prefix="qs-lock-observer-build-") as directory:
+    build = Path(directory)
+    protocol = source / "hyprland-lock-notify-v1.xml"
+    header = build / "hyprland-lock-notify-v1-client-protocol.h"
+    generated = build / "hyprland-lock-notify-v1-protocol.c"
+    subprocess.run(["wayland-scanner", "client-header", str(protocol), str(header)], check=True)
+    subprocess.run(["wayland-scanner", "private-code", str(protocol), str(generated)], check=True)
+    flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "wayland-client"], text=True))
+    binary = build / "lock-observer"
+    subprocess.run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-I", str(build),
+                    str(source / "observer.c"), str(generated), "-o", str(binary), *flags], check=True)
+    destination.mkdir(parents=True, exist_ok=True)
+    temporary = destination / ".lock-observer.new"
+    shutil.copy2(binary, temporary)
+    os.replace(temporary, destination / "lock-observer")
+print("Built native Wayland session lock observer.")

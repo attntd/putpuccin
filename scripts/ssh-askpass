@@ -1,0 +1,101 @@
+#!/usr/bin/python
+"""OpenSSH askpass: private in-memory reply channel to the running shell."""
+import ctypes
+import json
+import os
+from pathlib import Path
+import resource
+import signal
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+
+
+class Cancelled(Exception):
+    pass
+
+
+def interrupted(*_):
+    raise Cancelled()
+
+
+def fallback():
+    # Only before our UI accepts a request; cancellation never opens another UI.
+    os.execv('/usr/bin/ksshaskpass', ['/usr/bin/ksshaskpass', *sys.argv[1:]])
+
+
+def main():
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, interrupted)
+    mode = os.environ.get('SSH_ASKPASS_PROMPT', '')
+    mode = mode if mode in ('none', 'confirm') else 'input'
+    message = sys.argv[1] if len(sys.argv) > 1 else ''
+    if len(message) > 8192:
+        return 1
+    accepted = False
+    peer = None
+    try:
+        runtime = Path(os.environ['XDG_RUNTIME_DIR'])
+        info = runtime.stat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            return 1
+        with tempfile.TemporaryDirectory(prefix='qs-askpass-', dir=runtime) as directory:
+            path = str(Path(directory) / 'socket')
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(path)
+                os.chmod(path, 0o600)
+                server.listen(1)
+                server.settimeout(5)
+                reply = subprocess.run(['qs', 'ipc', '-p', str(Path(__file__).resolve().parents[1]),
+                    'call', 'authentication', 'askpass', path],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5)
+                if reply.returncode:
+                    raise OSError('Shell unavailable')
+                status = json.loads(reply.stdout)
+                if status.get('accepted') is not True:
+                    return 1
+                accepted = True
+                peer, _ = server.accept()
+                with peer:
+                    pid, uid, _ = struct.unpack('3i', peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+                    if uid != os.getuid() or pid != status.get('pid'):
+                        return 1
+                    peer.settimeout(120)
+                    peer.sendall((json.dumps({'mode': mode, 'message': message}) + '\n').encode())
+                    try:
+                        with peer.makefile('rb') as stream:
+                            line = stream.readline(16385)
+                        if len(line) > 16384:
+                            return 1
+                        result = json.loads(line)
+                        if mode != 'none' and result.get('accepted') is True and isinstance(result.get('response'), str):
+                            response = result['response']
+                            if any(c in response for c in '\r\n\0'):
+                                return 1
+                            sys.stdout.write(response + '\n')
+                            sys.stdout.flush()
+                            return 0
+                    except Cancelled:
+                        # OpenSSH ends its touch notification with SIGTERM.
+                        peer.settimeout(0.2)
+                        try:
+                            peer.sendall(b'{"closed":true}\n')
+                            peer.recv(1024)
+                        except OSError:
+                            pass
+                    return 1
+    except Cancelled:
+        return 1
+    except (OSError, KeyError, ValueError, subprocess.TimeoutExpired):
+        if not accepted:
+            fallback()
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

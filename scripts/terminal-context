@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Read foreground command, SSH destination and local cwd without connecting."""
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import sys
+from urllib.parse import urlsplit
+
+
+SHELLS = {"sh", "bash", "dash", "fish", "zsh", "nu", "elvish"}
+SSH_VALUE_OPTIONS = set("BbcDEeFIiJLlmOopQRSWw")
+
+
+def ssh_destination(argv):
+    if not argv:
+        return None
+    command = Path(argv[0]).name
+    args = argv[1:]
+    if command in {"kitten", "kitty"}:
+        if command == "kitty" and args[:1] == ["+kitten"]:
+            args = args[1:]
+        if args[:1] != ["ssh"]:
+            return None
+        args = args[1:]
+    elif command != "ssh":
+        return None
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if arg == "--":
+            break
+        if not arg.startswith("-") or arg == "-":
+            i -= 1
+            break
+        if arg.startswith("--kitten="):
+            continue
+        if arg == "--kitten":
+            i += 1
+            continue
+        if arg.startswith("--"):
+            return None
+        for offset, option in enumerate(arg[1:], 1):
+            if option in "GNQOW":
+                return None  # Config queries, tunnels and control commands are not sessions.
+            if option in SSH_VALUE_OPTIONS:
+                if offset == len(arg) - 1:
+                    i += 1
+                break
+    if i >= len(args):
+        return None
+    destination = args[i]
+    if destination.startswith("ssh://"):
+        try:
+            destination = urlsplit(destination).hostname or ""
+        except ValueError:
+            return None
+    else:
+        destination = destination.rsplit("@", 1)[-1].strip("[]")
+    return destination if re.fullmatch(r"[\w.:%-]{1,253}", destination, re.ASCII) else None
+
+
+def processes(root_pid, proc_root):
+    pending = [root_pid]
+    seen = set()
+    result = []
+    while pending and len(seen) < 1024:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        path = proc_root / str(pid)
+        try:
+            fields = (path / "stat").read_text().rsplit(")", 1)[1].split()
+            record = {"pid": pid, "parent": int(fields[1]), "comm": (path / "comm").read_text().strip(),
+                      "group": int(fields[2]), "tty": int(fields[4]),
+                      "foreground": int(fields[5]), "cwd": "", "argv": []}
+            try:
+                record["cwd"] = os.readlink(path / "cwd")
+                record["argv"] = (path / "cmdline").read_bytes().decode(errors="replace").rstrip("\0").split("\0")
+            except OSError:
+                pass
+            result.append(record)
+            pending.extend(int(child) for child in
+                           (path / "task" / str(pid) / "children").read_text().split())
+        except (OSError, ValueError, IndexError):
+            continue
+    return result
+
+
+def foreground_command(records):
+    if not records:
+        return ""
+    # Prefer the job leader, never a background helper spawned by the CLI.
+    leader = next((r for r in records if r["pid"] == r["group"]), records[0])
+    argv = leader["argv"]
+    name = Path(argv[0]).name if argv and argv[0] else leader["comm"]
+    if name in {"node", "nodejs", "python", "python3", "ruby"} and len(argv) > 1 and not argv[1].startswith("-"):
+        name = Path(argv[1]).name
+        if name == "codex.js":
+            name = "codex"
+    if ssh_destination(argv):
+        name = "ssh"
+    return "".join(c for c in name if c.isprintable())[:128]
+
+
+def kitty_context(pid, title, proc_root=Path("/proc"), runtime_root=None):
+    """Use the selected Kitty tab's OSC 7/133 metadata, without remote control."""
+    runtime = Path(runtime_root or os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+    try:
+        metadata = json.loads((runtime / "quickshell-de-terminal" / f"{pid}.json").read_text())
+        start = (proc_root / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[19]
+        if metadata.get("start") != start:
+            return None
+        windows = metadata["windows"]
+        matches = [w for w in windows if w.get("title") == re.sub(r"^[\u2800-\u28ff]\s*", "", title)]
+        if len(matches) != 1:
+            matches = windows if len(windows) == 1 else []
+        if len(matches) != 1:
+            return None
+        record = matches[0]
+        if not isinstance(record.get("cwd"), str) or not record["cwd"].startswith("/"):
+            return None
+        if not isinstance(record.get("host"), str) or not isinstance(record.get("command"), str):
+            return None
+        return record
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        return None
+
+
+def terminal_context(pid, proc_root=Path("/proc"), local_host=None):
+    local_host = local_host or socket.gethostname()
+    records = processes(pid, proc_root)
+    if not records:
+        raise ProcessLookupError(pid)
+    by_pid = {r["pid"]: r for r in records}
+    terminals = {}
+    for record in records:
+        if record["tty"] and record["foreground"] > 0:
+            terminals.setdefault(record["tty"], []).append(record)
+
+    contexts = []
+    for members in terminals.values():
+        foreground = [r for r in members if r["group"] == r["foreground"]]
+        command = foreground_command(foreground)
+        sessions = {r["pid"]: host for r in foreground if (host := ssh_destination(r["argv"]))}
+        hosts = set()
+        for session_pid, host in sessions.items():
+            parent = by_pid[session_pid]["parent"]
+            ancestors = {session_pid}
+            while parent in by_pid and parent not in ancestors and parent not in sessions:
+                ancestors.add(parent)
+                parent = by_pid[parent]["parent"]
+            if parent not in sessions:
+                hosts.add(host)  # ProxyCommand children must not replace the outer destination.
+        if hosts:
+            contexts.append({"host": next(iter(hosts)) if len(hosts) == 1 else "",
+                             "remote": True, "cwd": "", "command": command})
+        else:
+            shell = next((r for r in members if r["comm"] in SHELLS), members[0])
+            contexts.append({"host": local_host, "remote": False, "cwd": shell["cwd"], "command": command})
+
+    if not contexts:
+        return {"host": local_host, "remote": False, "cwd": records[0]["cwd"], "command": ""}
+    # Multiple Kitty tabs can share an OS window. Never label a local tab with
+    # another tab's host when /proc cannot identify the selected tab.
+    hosts = {c["host"] for c in contexts}
+    if len(hosts) > 1:
+        return {"host": "", "remote": any(c["remote"] for c in contexts), "cwd": "", "command": ""}
+    context = contexts[0]
+    if len({c["cwd"] for c in contexts}) > 1:
+        context["cwd"] = ""
+    if len({c["command"] for c in contexts}) > 1:
+        context["command"] = ""
+    return context
+
+
+if __name__ == "__main__":
+    if len(sys.argv) not in (2, 3) or not sys.argv[1].isascii() or not sys.argv[1].isdigit() or int(sys.argv[1]) <= 0:
+        sys.exit(64)
+    try:
+        pid = int(sys.argv[1])
+        result = terminal_context(pid)
+        reported = kitty_context(pid, sys.argv[2] if len(sys.argv) == 3 else "")
+        if reported:
+            result["cwd"] = reported["cwd"]
+            if reported["host"]:
+                result["host"] = reported["host"]
+            if reported["command"]:
+                result["command"] = reported["command"]
+        print(json.dumps(result))
+    except (OSError, ValueError):
+        sys.exit(1)

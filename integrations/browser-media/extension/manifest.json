@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Quickshell Browser Media",
+  "version": "0.1.0",
+  "description": "Local media controls for SoundCloud and Apple Music.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "quickshell-browser-media@local",
+      "strict_min_version": "128.0",
+      "data_collection_permissions": { "required": ["none"] }
+    }
+  },
+  "permissions": ["nativeMessaging"],
+  "host_permissions": [
+    "https://soundcloud.com/*",
+    "https://www.soundcloud.com/*",
+    "https://music.apple.com/*"
+  ],
+  "background": { "scripts": ["background.js"] },
+  "content_scripts": [
+    {
+      "matches": ["https://soundcloud.com/*", "https://www.soundcloud.com/*", "https://music.apple.com/*"],
+      "js": ["relay.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://soundcloud.com/*", "https://www.soundcloud.com/*", "https://music.apple.com/*"],
+      "js": ["page.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    }
+  ]
+}

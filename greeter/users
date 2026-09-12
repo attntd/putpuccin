@@ -1,0 +1,29 @@
+#!/usr/bin/python3
+"""Read local login names once. Never reads shadow, home files or fingerprints."""
+import json
+from pathlib import Path
+import pwd
+import re
+
+root = Path(__file__).resolve().parent
+config = json.loads((root / 'config.json').read_text())
+assert config.get('version') == 1
+metadata = {user['username']: user for user in config.get('users', [])}
+shells = set(line.strip() for line in Path('/etc/shells').read_text().splitlines()
+             if line.strip() and not line.startswith('#'))
+limits = dict(re.findall(r'^\s*(UID_MIN|UID_MAX)\s+(\d+)', Path('/etc/login.defs').read_text(), re.M))
+users = []
+for entry in pwd.getpwall():
+    if not int(limits.get('UID_MIN', 1000)) <= entry.pw_uid <= int(limits.get('UID_MAX', 60000)):
+        continue
+    if entry.pw_shell not in shells or Path(entry.pw_shell).name in ('nologin', 'false'):
+        continue
+    if not re.fullmatch(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}', entry.pw_name):
+        continue
+    info = metadata.get(entry.pw_name, {})
+    name = ''.join(c for c in entry.pw_gecos.split(',')[0] if c.isprintable())[:128]
+    users.append({'username': entry.pw_name, 'displayName': name or entry.pw_name,
+        'avatar': (root / 'assets/avatars' / (entry.pw_name + '.png')).is_file(),
+        'fingerprint': info.get('fingerprint') is True})
+print(json.dumps({'version': 1, 'defaultUser': config.get('defaultUser', ''),
+    'users': sorted(users, key=lambda user: user['username'])[:256]}))

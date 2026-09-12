@@ -1,0 +1,6 @@
+module qs.modules.notifications
+NotificationTransition 1.0 NotificationTransition.qml
+NotificationCard 1.0 NotificationCard.qml
+NotificationText 1.0 NotificationText.qml
+NotificationCenter 1.0 NotificationCenter.qml
+NotificationToasts 1.0 NotificationToasts.qml

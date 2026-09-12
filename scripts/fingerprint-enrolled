@@ -1,0 +1,15 @@
+#!/usr/bin/python3
+"""Only detect enrollment for the current UID; authentication belongs to PAM."""
+import os
+import pwd
+import re
+import subprocess
+
+try:
+    result = subprocess.run(["fprintd-list", pwd.getpwuid(os.getuid()).pw_name],
+                            env=dict(os.environ, LC_ALL="C"), capture_output=True,
+                            text=True, timeout=3, check=False)
+    enrolled = result.returncode == 0 and bool(re.search(r"^\s*- #\d+: [a-z-]+(?:finger|thumb)\s*$", result.stdout, re.M))
+except (OSError, subprocess.TimeoutExpired, KeyError):
+    enrolled = False
+print("true" if enrolled else "false")

@@ -1,0 +1,15 @@
+module qs.popups
+
+AudioPopup 1.0 AudioPopup.qml
+BatteryPopup 1.0 BatteryPopup.qml
+BluetoothPopup 1.0 BluetoothPopup.qml
+BrightnessPopup 1.0 BrightnessPopup.qml
+CalendarPopup 1.0 CalendarPopup.qml
+ClipboardPopup 1.0 ClipboardPopup.qml
+LauncherPopup 1.0 LauncherPopup.qml
+MediaPopup 1.0 MediaPopup.qml
+NetworkPopup 1.0 NetworkPopup.qml
+PowerPopup 1.0 PowerPopup.qml
+TrayPopup 1.0 TrayPopup.qml
+WindowPopup 1.0 WindowPopup.qml
+QuickSettingsPopup 1.0 QuickSettingsPopup.qml

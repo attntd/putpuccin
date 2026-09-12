@@ -1,0 +1,13 @@
+[terminal]
+vt = 1
+
+[general]
+source_profile = false
+service = "quickshell-greeter"
+
+[default_session]
+command = "/usr/local/libexec/quickshell-greeter/session"
+user = "greeter"
+# Arch ships this account/session profile; authentication is skipped only for
+# the dedicated frontend session. Real logins use general.service above.
+service = "greetd"

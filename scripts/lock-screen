@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Request a real session lock and wait for the compositor's confirmation."""
+import fcntl
+import hashlib
+import os
+from pathlib import Path
+import resource
+import selectors
+import shutil
+import stat
+import subprocess
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+SHELL_TIMEOUT = 1.2
+TOTAL_TIMEOUT = 4.0
+
+
+class LockError(RuntimeError):
+    pass
+
+
+class Observer:
+    """One event subscription; never infer a lock from a process or IPC ACK."""
+
+    def __init__(self):
+        self.process = subprocess.Popen(
+            [str(ROOT / "integrations/LockObserver/lock-observer")],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        self.selector = selectors.DefaultSelector()
+        self.selector.register(self.process.stdout, selectors.EVENT_READ)
+        os.set_blocking(self.process.stdout.fileno(), False)
+        self.buffer = b""
+        self.ready = False
+        self.locked = False
+
+    def update(self, timeout=0):
+        if not self.selector.select(max(0, timeout)):
+            return self.locked
+        data = os.read(self.process.stdout.fileno(), 4096)
+        if not data:
+            raise LockError("Nie działa potwierdzanie blokady przez kompozytor.")
+        self.buffer += data
+        if len(self.buffer) > 8192:
+            raise LockError("Nieprawidłowa odpowiedź obserwatora blokady.")
+        while b"\n" in self.buffer:
+            line, self.buffer = self.buffer.split(b"\n", 1)
+            if line in (b"ready locked", b"ready unlocked") and not self.ready:
+                self.ready = True
+                self.locked = line == b"ready locked"
+            elif line in (b"locked", b"unlocked") and self.ready:
+                self.locked = line == b"locked"
+            else:
+                raise LockError("Nieprawidłowa odpowiedź obserwatora blokady.")
+        return self.locked
+
+    def close(self):
+        self.selector.close()
+        stop_ipc(self.process)
+        self.process.stdout.close()
+
+
+def stop_ipc(process):
+    # Only disposable IPC/observer clients are stopped, never a locker.
+    if process is not None:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+
+
+def guard():
+    """Keep concurrent requests on this compositor from starting two fallbacks."""
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", ""))
+    if not runtime.is_absolute():
+        raise LockError("Brak prywatnego katalogu XDG_RUNTIME_DIR.")
+    directory = os.open(runtime, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(directory)
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise LockError("XDG_RUNTIME_DIR nie jest prywatnym katalogiem użytkownika.")
+        display = Path(os.environ.get("WAYLAND_DISPLAY", "wayland-0"))
+        if not display.is_absolute():
+            display = runtime / display
+        key = hashlib.sha256(os.fsencode(display)).hexdigest()[:24]
+        fd = os.open("quickshell-session-lock-" + key + ".lock",
+                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600, dir_fd=directory)
+    finally:
+        os.close(directory)
+    info = os.fstat(fd)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_nlink != 1 or info.st_mode & 0o077):
+        os.close(fd)
+        raise LockError("Nieprawidłowy plik synchronizacji blokady.")
+    return fd
+
+
+def fallback(fd):
+    binary = shutil.which("hyprlock")
+    if not binary:
+        raise LockError("Brak awaryjnego programu hyprlock; blokada nie została potwierdzona.")
+    # Do not inherit caller pipes: the locker outlives this short helper.
+    # The inherited flock prevents duplicate fallbacks even after a timeout.
+    return subprocess.Popen([
+        binary, "--config", str(ROOT / "config/lock-fallback.conf"),
+        "--grace", "0", "--immediate-render", "--no-fade-in", "--quiet",
+    ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True, pass_fds=(fd,))
+
+
+def run():
+    start = time.monotonic()
+    deadline = start + TOTAL_TIMEOUT
+    # The fallback handles a password in its own PAM process; no core dump.
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    os.umask(0o077)
+    fd = guard()
+    observer = ipc = locker = None
+    try:
+        observer = Observer()
+        while not observer.ready:
+            if time.monotonic() >= min(deadline, start + 0.6):
+                raise LockError("Kompozytor nie potwierdził gotowości obserwatora blokady.")
+            observer.update(min(0.05, deadline - time.monotonic()))
+        if observer.locked:
+            return 0
+
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise LockError("Poprzednie żądanie nie potwierdziło zabezpieczenia sesji.")
+                if observer.update(min(0.05, deadline - time.monotonic())):
+                    return 0
+        if observer.update():
+            return 0
+
+        binary = shutil.which("qs")
+        if binary:
+            config = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "quickshell"
+            try:
+                ipc = subprocess.Popen([binary, "ipc", "-p", str(config), "call", "lockscreen", "lock"],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+            except OSError:
+                pass
+        while ipc is not None and time.monotonic() < start + SHELL_TIMEOUT:
+            if observer.update(min(0.05, start + SHELL_TIMEOUT - time.monotonic())):
+                return 0
+            if ipc.poll() not in (None, 0):
+                break
+        stop_ipc(ipc)
+        ipc = None
+        if observer.update():
+            return 0
+
+        locker = fallback(fd)
+        while time.monotonic() < deadline:
+            if observer.update(min(0.05, deadline - time.monotonic())):
+                return 0
+            if locker.poll() is not None:
+                # A competing locker may have won the race. Only a compositor
+                # event can turn that into success, never hyprlock's exit code.
+                if observer.update(0.05):
+                    return 0
+                raise LockError("Awaryjna blokada zakończyła się bez potwierdzenia kompozytora.")
+        raise LockError("Upłynął czas potwierdzania blokady; hyprlock pozostaje uruchomiony.")
+    finally:
+        stop_ipc(ipc)
+        if observer is not None:
+            observer.close()
+        # Closing this copy does not drop a fallback's inherited flock. Never
+        # kill a locker on timeout: it may already own a fail-closed Wayland lock.
+        os.close(fd)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(run())
+    except (LockError, OSError, subprocess.SubprocessError) as error:
+        print(f"Nie potwierdzono zabezpieczenia sesji: {error}", file=sys.stderr)
+        sys.exit(1)

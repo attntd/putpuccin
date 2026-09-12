@@ -1,0 +1,17 @@
+module qs.components
+
+ActionButton 1.0 ActionButton.qml
+BarButton 1.0 BarButton.qml
+DetachedLauncher 1.0 DetachedLauncher.qml
+EmptyState 1.0 EmptyState.qml
+PopupFrame 1.0 PopupFrame.qml
+PopupLoader 1.0 PopupLoader.qml
+RevealSection 1.0 RevealSection.qml
+PillSwitch 1.0 PillSwitch.qml
+SectionTitle 1.0 SectionTitle.qml
+SearchField 1.0 SearchField.qml
+StatusSlider 1.0 StatusSlider.qml
+ToggleRow 1.0 ToggleRow.qml
+TypewriterText 1.0 TypewriterText.qml
+ScrollingText 1.0 ScrollingText.qml
+SessionAuthView 1.0 SessionAuthView.qml

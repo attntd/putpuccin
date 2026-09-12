@@ -1,0 +1,9 @@
+module qs.modules.network
+NetworkSettings 1.0 NetworkSettings.qml
+NetworkProfileEditor 1.0 NetworkProfileEditor.qml
+NetworkField 1.0 NetworkField.qml
+NetworkChoice 1.0 NetworkChoice.qml
+NetworkWindow 1.0 NetworkWindow.qml
+NetworkNearby 1.0 NetworkNearby.qml
+NetworkProfiles 1.0 NetworkProfiles.qml
+NetworkVpnImport 1.0 NetworkVpnImport.qml
