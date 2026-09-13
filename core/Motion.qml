@@ -8,6 +8,8 @@ Singleton {
     readonly property int elaborate: 240
     readonly property int lockFade: 400
     readonly property int typewriterStep: 18
+    // Functional hold duration requested for the quick-menu device pickers.
+    readonly property int audioDeviceHold: 1000
     // Reading overflow is functional motion, paced by distance rather than
     // the short surface-transition durations.
     readonly property int textScrollPause: 700

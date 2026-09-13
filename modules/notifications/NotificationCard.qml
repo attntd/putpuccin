@@ -15,8 +15,11 @@ AbstractButton {
     property bool managedReveal: false
     property bool revealSelected: false
     property real stackRevealProgress: -1
-    property bool expanded: false
+    property bool expanded: replyOpen
     property bool controlsOpen: false
+    property NotificationReplyState replyState: NotificationReplyState {}
+    readonly property bool replyAvailable: notification.hasInlineReply === true
+    readonly property bool replyOpen: replyAvailable && replyState.uid === notification.uid
     readonly property bool keyboardFocusWithin: {
         const focused = root.Window.activeFocusItem;
         if (!focused || !focused.visualFocus)
@@ -28,20 +31,63 @@ AbstractButton {
         return false;
     }
     readonly property bool controlsRevealed: (managedReveal ? revealSelected : controlsOpen)
-        || root.keyboardFocusWithin
-    readonly property bool expandable: expanded || summaryText.truncated || bodyText.truncated
+        || root.keyboardFocusWithin || replyOpen
+    readonly property bool expandable: expanded || replyAvailable || summaryText.truncated || bodyText.truncated
     signal activated(string actionId)
     signal controlsRequested()
+    signal replyStarted()
+    signal replyFinished()
     function revealControls() {
         if (managedReveal) controlsRequested();
         else controlsOpen = true;
     }
+    function beginReply() {
+        if (!replyAvailable)
+            return;
+        revealControls();
+        expanded = true;
+        replyStarted();
+        replyState.begin(notification.uid);
+        if (replyLoader.item)
+            replyLoader.item.focusInput();
+    }
+    function finishReply() {
+        replyState.reset();
+        expanded = false;
+        controlsOpen = false;
+        forceActiveFocus(Qt.MouseFocusReason);
+        replyFinished();
+    }
+    function sendReply() {
+        if (!replyOpen || !replyState.text.trim())
+            return;
+        if (NotificationService.reply(notification.uid, replyState.text))
+            finishReply();
+        else
+            replyState.error = Strings.notificationsReplyUnavailable;
+    }
+    onReplyAvailableChanged: {
+        if (replyState.uid === notification.uid && !replyAvailable)
+            finishReply();
+    }
+    Keys.onShortcutOverride: event => {
+        // The bar has a window-wide Escape shortcut. Let the editor consume
+        // the first Escape before that shortcut can close the whole center.
+        if (replyOpen && event.key === Qt.Key_Escape) event.accepted = true;
+    }
+    Keys.onEscapePressed: event => {
+        if (replyOpen) finishReply();
+        else event.accepted = false;
+    }
     hoverEnabled: true
     activeFocusOnTab: true
     padding: Metrics.space12
-    Accessible.name: (!controlsRevealed || (expandable && !expanded) ? Strings.notificationsExpand : Strings.notificationsOpen) + ": " + notification.summary
+    Accessible.name: (replyAvailable ? Strings.notificationsReply
+        : !controlsRevealed || (expandable && !expanded) ? Strings.notificationsExpand : Strings.notificationsOpen) + ": " + notification.summary
     onClicked: {
-        if (!controlsRevealed) {
+        if (replyAvailable) {
+            beginReply();
+        } else if (!controlsRevealed) {
             revealControls();
             if (expandable && !expanded) expanded = true;
         } else if (expandable && !expanded)
@@ -52,7 +98,7 @@ AbstractButton {
     // Shared reveal progress must stay fractional; the layout's per-row
     // rounding must not change the total stack height during a handoff.
     implicitHeight: managedReveal && stackRevealProgress >= 0
-        ? primaryContent.implicitHeight + actionReveal.implicitHeight + controlsReveal.implicitHeight + Metrics.space24
+        ? primaryContent.implicitHeight + replyReveal.implicitHeight + actionReveal.implicitHeight + controlsReveal.implicitHeight + Metrics.space24
         : content.implicitHeight + Metrics.space24
 
     background: Rectangle {
@@ -125,7 +171,11 @@ AbstractButton {
                         implicitWidth: Metrics.minHitSize
                         implicitHeight: Metrics.minHitSize
                         Accessible.name: root.expanded ? Strings.notificationsCollapse : Strings.notificationsExpand
-                        onClicked: { root.revealControls(); root.expanded = !root.expanded; }
+                        onClicked: {
+                            if (root.replyOpen) root.finishReply();
+                            else if (root.replyAvailable) root.beginReply();
+                            else { root.revealControls(); root.expanded = !root.expanded; }
+                        }
                     }
                 }
             }
@@ -165,6 +215,24 @@ AbstractButton {
             }
         }
         RevealSection {
+            id: replyReveal
+            objectName: "notificationReply"
+            Layout.fillWidth: true
+            topInset: Metrics.space8
+            revealed: root.replyOpen
+            Loader {
+                id: replyLoader
+                width: parent.width
+                active: root.replyOpen || replyReveal.progress > 0
+                sourceComponent: NotificationReplyEditor {
+                    replyState: root.replyState
+                    placeholder: root.notification.inlineReplyPlaceholder || ""
+                    onSendRequested: root.sendReply()
+                    onCancelRequested: root.finishReply()
+                }
+            }
+        }
+        RevealSection {
             id: actionReveal
             objectName: "notificationActions"
             topInset: Metrics.space8
@@ -199,6 +267,13 @@ AbstractButton {
             revealed: root.controlsRevealed
             RowLayout {
                 width: parent.width
+                ActionButton {
+                    visible: root.replyAvailable
+                    objectName: "notificationOpen"
+                    text: Strings.notificationsOpenApp
+                    borderless: true
+                    onClicked: { root.finishReply(); root.activated(""); }
+                }
                 Item {
                     Layout.fillWidth: true
                 }

@@ -30,6 +30,11 @@ ShellRoot {
             width: 410
             sourceComponent: QuickSettingsPopup { screenName: "caffeinate-test" }
         }
+        QuickAudioChecks {
+            id: audioTests
+            panelLoader: loader
+            testWindow: window
+        }
         TestCase {
             id: tests
             when: false
@@ -107,7 +112,22 @@ ShellRoot {
                 snapshot("on");
                 const samples = [];
                 for (let cycle = 0; cycle < 20; cycle++) {
-                    click(mic); click(dnd); click(volume); settle();
+                    click(mic); settle();
+                    if (panel) {
+                        check(osd.item.visible && OsdService.kind === "microphone"
+                            && OsdService.muted === AudioService.sourceMuted, "OSD missed microphone mute change");
+                        check(osdGlyph.text === Icons.microphone
+                            && osdGlyph.children[0].visible === AudioService.sourceMuted,
+                            "Microphone OSD has the wrong icon or slash");
+                        check(JSON.stringify(osdGeometry()) === JSON.stringify(before[3]), "Microphone changed OSD geometry");
+                        if (cycle < 2) {
+                            iconHeights["osd-microphone"] = osdGlyph.height;
+                            const state = cycle === 0 ? "off" : "on";
+                            saveItem(osdGlyph, "osd-microphone-" + state);
+                            saveItem(panel, "osd-microphone-panel-" + state);
+                        }
+                    }
+                    click(dnd); click(volume); settle();
                     check(waitForPolish(window, 500), "Tile layout did not settle");
                     check(AudioService.sourceMuted === (cycle % 2 === 0)
                         && NotificationService.dnd === (cycle % 2 === 0)
@@ -120,6 +140,59 @@ ShellRoot {
                 }
                 return {passed: samples.every(sample => JSON.stringify(sample) === JSON.stringify(before)),
                     cycles: samples.length, iconHeights: iconHeights, beforeGeometry: before, afterGeometry: samples[0]};
+            }
+            function microphoneOsd() {
+                check(!!osd.item, "Microphone OSD test needs private Wayland");
+                const panel = find(osd.item.contentItem, "levelOsdPanel");
+                const track = panel.children[0].children[1];
+                const savedOutputAvailable = AudioService.available;
+                OsdService.shown = false;
+                AudioService.available = false;
+                AudioService.sourceAvailable = false;
+                AudioService.sourceMuted = true;
+                AudioService.sourceVolume = 0.7;
+                settle();
+                check(!OsdService.shown, "Unavailable microphone showed OSD");
+                AudioService.sourceAvailable = true;
+                AudioService.sourceMuted = false;
+                AudioService.sourceVolume = 0.6;
+                settle();
+                check(!OsdService.shown, "Initial microphone state showed OSD after reconnect");
+
+                // Hardware keys change the service without clicking quick menu.
+                AudioService.sourceMuted = true;
+                check(OsdService.shown && OsdService.kind === "microphone" && OsdService.muted,
+                    "External microphone mute did not show OSD without an output device");
+                const fade = [];
+                for (let frame = 0; frame < 16; frame++) { wait(16); fade.push(panel.opacity); }
+                check(fade[fade.length - 1] === 1 && fade.some(value => value > 0 && value < 1)
+                    && fade.every((value, index) => index === 0 || value >= fade[index - 1]),
+                    "Microphone OSD fade skipped intermediate frames or moved backwards");
+                check(track.children[0].width === 0 && AudioService.sourceVolume === 0.6,
+                    "Muted OSD retained its fill or changed the microphone level");
+                wait(600);
+                AudioService.sourceMuted = false;
+                settle();
+                check(!OsdService.muted && OsdService.value === 0.6
+                    && Math.abs(track.children[0].width - track.width * 0.6) < 0.01,
+                    "External microphone unmute did not restore the displayed level");
+                wait(500);
+                check(OsdService.shown && osd.item.visible, "Unmute did not restart the OSD timeout");
+                tryVerify(() => !OsdService.shown && !osd.item.visible, 1200);
+                check(!OsdService.shown && !osd.item.visible, "Microphone OSD did not hide after its timeout");
+
+                AudioService.sourceVolume = 0.72;
+                check(OsdService.shown && OsdService.kind === "microphone" && OsdService.value === 0.72,
+                    "Microphone level change did not show OSD");
+                AudioService.available = savedOutputAvailable;
+                settle();
+                AudioService.muted = true;
+                check(OsdService.kind === "volume" && OsdService.muted, "Speaker did not replace microphone OSD");
+                AudioService.muted = false;
+                AudioService.sourceVolume = 0.6;
+                OsdService.shown = false;
+                settle();
+                return {passed: true, fadeProgress: fade};
             }
             function smoke(reduced) {
                 Settings.reducedMotion = reduced;
@@ -242,6 +315,9 @@ ShellRoot {
     IpcHandler {
         target: "caffeinatetest"
         function ready(): bool { return !!loader.item && !!CaffeinateService; }
+        function audio(reduced: bool): string { try { return JSON.stringify(audioTests.run(reduced)); } catch(error) { return JSON.stringify({passed: false, error: String(error)}); } }
+        function audioCycle(): string { try { return JSON.stringify(audioTests.cycle()); } catch(error) { return JSON.stringify({passed: false, error: String(error)}); } }
+        function microphoneOsd(): string { try { return JSON.stringify(tests.microphoneOsd()); } catch(error) { return JSON.stringify({passed: false, error: String(error)}); } }
         function tiles(): string { return JSON.stringify(tests.tiles()); }
         function smoke(reduced: bool): string { try { return JSON.stringify(tests.smoke(reduced)); } catch(error) { return JSON.stringify({passed: false, error: String(error)}); } }
         function run(reduced: bool): string { try { return JSON.stringify(tests.run(reduced)); } catch(error) { return JSON.stringify({passed: false, error: String(error)}); } }

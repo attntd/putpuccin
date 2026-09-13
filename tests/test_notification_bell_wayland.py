@@ -22,8 +22,10 @@ def run():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cycles', type=int, default=20)
     parser.add_argument('--skip-colors', action='store_true', help='Reproduce the click failure before the appearance change')
+    parser.add_argument('--skip-replies', action='store_true', help='Measure the shell before inline reply support')
+    parser.add_argument('--source', default=str(Path(__file__).resolve().parents[1]))
     args = parser.parse_args()
-    root = Path(__file__).resolve().parents[1]
+    root = Path(args.source).resolve()
     work = Path(tempfile.mkdtemp(prefix='qbell-'))
     config = work / 'shell'
     for directory in ('core', 'components', 'modules/statusbar', 'modules/notifications'):
@@ -64,7 +66,7 @@ def run():
     (config / 'scripts').mkdir()
     shutil.copy2(root / 'scripts/notification-state', config / 'scripts/notification-state')
     shutil.copytree(root / 'assets/sounds', config / 'assets/sounds')
-    shutil.copy2(root / 'tests/fixtures/notification-bell-wayland.qml', config / 'shell.qml')
+    shutil.copy2(Path(__file__).parent / 'fixtures/notification-bell-wayland.qml', config / 'shell.qml')
     settings = work / 'config/quickshell-de/settings.json'
     settings.parent.mkdir(parents=True)
     settings.write_text(json.dumps({'schemaVersion': 1, 'leftModules': [], 'centerModules': [],
@@ -88,7 +90,7 @@ def run():
     display = Path(os.environ['WAYLAND_DISPLAY'])
     if not display.is_absolute():
         display = parent_runtime / display
-    bus = comp = proc = None
+    bus = comp = proc = monitor = None
     report = {'passed': False, 'work': str(work)}
     try:
         bus = subprocess.Popen(['dbus-daemon', '--config-file=' + str(bus_config), '--nofork', '--print-address=1'],
@@ -212,16 +214,170 @@ hl.config({misc={disable_hyprland_logo=true,disable_splash_rendering=true,force_
             assert state()['open'] and state()['panel'], state()
             subprocess.run(['wtype', '-k', 'Escape'], env=env, check=True, timeout=5)
             closed(); call('fullscreen', False)
+            report['after_bell_cycles'] = measure()
+            if not args.skip_replies:
+                call('reduced', False)
+                signal_log = (work / 'reply-signals.log').open('w')
+                monitor = subprocess.Popen(['dbus-monitor', '--session',
+                    "type='signal',interface='org.freedesktop.Notifications'"],
+                    env=env, stdout=signal_log, stderr=subprocess.DEVNULL)
+
+                def replies():
+                    return json.loads(call('replyState'))
+
+                def card(uid):
+                    return next((item for item in replies()['cards'] if item['uid'] == uid), None)
+
+                def notify_reply(summary='Odpowiedź testowa', app='Reply test', reply=True, replaces=0,
+                                 body='Wiadomość wyłącznie z izolowanego testu.'):
+                    actions = ['inline-reply', 'Napisz odpowiedź…'] if reply else []
+                    result = subprocess.check_output(['gdbus', 'call', '--session', '--dest',
+                        'org.freedesktop.Notifications', '--object-path', '/org/freedesktop/Notifications',
+                        '--method', 'org.freedesktop.Notifications.Notify', '--', app, str(replaces), '',
+                        summary, body, json.dumps(actions), '{}', '-1'],
+                        env=env, text=True, timeout=5)
+                    nid = int(re.search(r'uint32 (\d+)', result)[1])
+                    return wait(lambda: next((r['uid'] for r in replies()['records'] if r['serverId'] == nid), None))
+
+                def open_reply(uid):
+                    # The model is populated before the layer's first map and
+                    # compositor animation; wait for the native click target.
+                    time.sleep(.25)
+                    pointer_at((20, 650), 'move')
+                    pointer_at(wait(lambda: card(uid))['point'])
+                    def focused_card():
+                        current = card(uid)
+                        return current if current and current['focused'] else None
+                    try:
+                        return wait(focused_card, timeout=2)
+                    except AssertionError as error:
+                        raise AssertionError({'reply': replies(), 'layers': compositor_ipc(child, 'j/layers')}) from error
+
+                def type_text(text):
+                    subprocess.run(['wtype', text], env=env, check=True, timeout=5)
+
+                def escape():
+                    subprocess.run(['wtype', '-k', 'Escape'], env=env, check=True, timeout=5)
+
+                call('clear'); call('duration', 6000)
+                uid = notify_reply(app='Signal', reply=False)
+                pointer_at(wait(lambda: card(uid))['point']); time.sleep(.25)
+                assert not card(uid)['editor'] and replies()['keyboard'] == replies()['none']
+                call('clear')
+                uid = notify_reply()
+                assert replies()['keyboard'] == replies()['none'], 'Arrival stole keyboard focus'
+                initial_height = wait(lambda: card(uid))['height']
+                current = open_reply(uid)
+                assert not current['sendEnabled'] and replies()['keyboard'] == replies()['exclusive']
+                type_text('   ')
+                wait(lambda: card(uid)['draft'] == '   ')
+                assert not card(uid)['sendEnabled']
+                escape(); wait(lambda: card(uid) and not card(uid)['editor'])
+                assert not card(uid)['draft'] and not card(uid)['paused']
+
+                open_reply(uid)
+                draft = 'Zażółć gęślą jaźń 👋'
+                type_text(draft); wait(lambda: card(uid)['draft'] == draft)
+                assert card(uid)['height'] > initial_height and card(uid)['sendEnabled']
+                call('captureReply', work / 'reply-toast.png')
+                wait(lambda: (work / 'reply-toast.png').exists())
+                # New toast delegates and history groups must not erase a reply.
+                notify_reply('Druga aplikacja', app='Another application', reply=False)
+                wait(lambda: card(uid) and card(uid)['focused'])
+                assert card(uid)['draft'] == draft and card(uid)['paused']
+                notify_reply('Zaktualizowana wiadomość', replaces=next(r['serverId'] for r in replies()['records'] if r['uid'] == uid))
+                wait(lambda: card(uid)['summary'] == 'Zaktualizowana wiadomość')
+                assert card(uid)['draft'] == draft and card(uid)['paused']
+                pointer_at(card(uid)['send'])
+                wait(lambda: 'NotificationReplied' in (work / 'reply-signals.log').read_text())
+                assert draft in (work / 'reply-signals.log').read_text()
+                wait(lambda: not card(uid))
+                assert replies()['keyboard'] == replies()['none']
+                assert 'ActionInvoked' not in (work / 'reply-signals.log').read_text()
+
+                call('clear'); call('duration', 1000)
+                uid = notify_reply()
+                open_reply(uid); type_text('Nie znikaj')
+                pointer_at((20, 650), 'move')
+                time.sleep(1.2)
+                assert card(uid)['draft'] == 'Nie znikaj' and card(uid)['paused']
+                escape(); wait(lambda: not card(uid))
+                call('clear'); call('duration', 60000)
+                before_cancel = (work / 'reply-signals.log').read_text().count('member=NotificationReplied')
+                uid = notify_reply()
+                report['reply_cycle_rss_kib'] = []
+                for cycle in range(args.cycles):
+                    call('reduced', cycle >= args.cycles // 2)
+                    open_reply(uid); type_text('Szkic ' + str(cycle))
+                    if cycle % 2:
+                        escape()
+                    else:
+                        time.sleep(.2)
+                        pointer_at(card(uid)['cancel'])
+                    wait(lambda: card(uid) and not card(uid)['editor'])
+                    assert not card(uid)['draft'] and not card(uid)['paused']
+                    assert replies()['keyboard'] == replies()['none']
+                    report['reply_cycle_rss_kib'].append(measure()['rss_kib'])
+                assert (work / 'reply-signals.log').read_text().count('member=NotificationReplied') == before_cancel
+
+                open_reply(uid); type_text('Anulowane przez DND')
+                call('dnd', True); wait(lambda: not replies()['toast'])
+                assert replies()['keyboard'] == replies()['none']
+                call('dnd', False); call('open'); time.sleep(.3)
+                open_reply(uid)
+                assert not card(uid)['draft'], 'Closed toast retained its draft in the center'
+                type_text('Odpowiedź z centrum')
+                notify_reply('Aktualizacja centrum', app='Another application', reply=False)
+                wait(lambda: card(uid) and card(uid)['focused'])
+                assert card(uid)['draft'] == 'Odpowiedź z centrum'
+                escape(); wait(lambda: card(uid) and not card(uid)['editor'])
+                assert state()['open'], 'First Escape should cancel only the reply'
+                open_reply(uid); type_text('Wysłane przez Enter')
+                subprocess.run(['wtype', '-k', 'Return'], env=env, check=True, timeout=5)
+                wait(lambda: 'Wysłane przez Enter' in (work / 'reply-signals.log').read_text())
+                wait(lambda: card(uid) and not card(uid)['editor'])
+                assert not card(uid)['draft'] and state()['open']
+                uid = notify_reply('Zamknięta przez nadawcę')
+                open_reply(uid); type_text('Szkic przed zamknięciem')
+                nid = next(r['serverId'] for r in replies()['records'] if r['uid'] == uid)
+                subprocess.run(['gdbus', 'call', '--session', '--dest', 'org.freedesktop.Notifications',
+                    '--object-path', '/org/freedesktop/Notifications', '--method',
+                    'org.freedesktop.Notifications.CloseNotification', str(nid)],
+                    env=env, check=True, capture_output=True, timeout=5)
+                wait(lambda: card(uid) and not card(uid)['editor'])
+                assert not card(uid)['draft'] and not card(uid)['available'] and state()['open'], (card(uid), state())
+                escape(); closed()
+                call('clear')
+                uid = notify_reply('Długa wiadomość', body='Długa treść powiadomienia.\n' * 70)
+                open_reply(uid)
+                wait(lambda: 0 < card(uid)['input'][1] < card(uid)['cancel'][1] < 700)
+                time.sleep(.3)
+                assert 0 < card(uid)['input'][1] < card(uid)['cancel'][1] < 700, card(uid)
+                escape(); wait(lambda: card(uid) and not card(uid)['editor'])
+                call('open'); time.sleep(.3)
+                open_reply(uid)
+                wait(lambda: 0 < card(uid)['input'][1] < card(uid)['cancel'][1] < 700)
+                time.sleep(.3)
+                assert 0 < card(uid)['input'][1] < card(uid)['cancel'][1] < 700, card(uid)
+                escape(); escape(); closed()
+                time.sleep(.35)
+                history = (work / 'state/quickshell-de/notifications.json').read_text()
+                assert all(text not in history for text in (draft, 'Odpowiedź z centrum', 'Wysłane przez Enter', 'Szkic'))
+                report['reply_checks'] = 'native focus, send/Enter, cancel/Escape, drafts across updates, pause, DND, center and private history'
+                stop(monitor); signal_log.close()
             report['after'] = measure()
             warnings = [line for line in (work / 'shell.log').read_text().splitlines()
                 if re.search(r'WARN|ERROR|TypeError:|ReferenceError:|Binding loop', line)
                 and not any(expected in line for expected in ('Failed to register with host portal',
                     'PulseAudioService: pa_context_connect() failed',
+                    # Quickshell 0.3.1 warns on a valid replacement containing
+                    # the same inline-reply action (upstream notification.cpp).
+                    'sent an action set with duplicate inline-reply actions.',
                     'QSoundEffect: playback of this format is not supported on the selected audio device'))]
             assert not warnings, warnings
             report.update(passed=True, cycles=args.cycles, warnings=warnings)
     finally:
-        stop(proc); stop(comp); stop(bus)
+        stop(monitor); stop(proc); stop(comp); stop(bus)
         report['production_unchanged'] = before_production == production_state(parent_socket)
         (work / 'result.json').write_text(json.dumps(report, indent=2))
         print(json.dumps(report, indent=2), flush=True)

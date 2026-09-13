@@ -49,7 +49,7 @@ try:
         assert not ipc(child, 'configerrors').strip()
         env.update(QS_QUICK_TILES_ONLY='1', QS_CAFFEINATE_WAYLAND=str(runtime / 'wayland-1'))
         result = subprocess.run([sys.executable, str(Path(__file__).with_name('test_caffeinate.py'))],
-            env=env, timeout=90)
+            env=env, timeout=150 if env.get('QS_QUICK_AUDIO_ONLY') == '1' else 90)
         assert result.returncode == 0, str(work)
 finally:
     stop(comp)

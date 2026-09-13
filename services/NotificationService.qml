@@ -67,6 +67,8 @@ Singleton {
                 delete copy.image;
                 // Action identifiers are never persisted: they belong to a live sender.
                 delete copy.actions;
+                delete copy.hasInlineReply;
+                delete copy.inlineReplyPlaceholder;
                 return copy;
             })};
         handoff.snapshot = JSON.stringify(data);
@@ -92,6 +94,8 @@ Singleton {
         clean.transient = false;
         clean.image = "";
         clean.actions = [];
+        clean.hasInlineReply = false;
+        clean.inlineReplyPlaceholder = "";
         return clean;
     }
 
@@ -112,7 +116,9 @@ Singleton {
             summary: String(n.summary || "").slice(0, 2048), body: String(n.body || "").slice(0, 32768),
             appIcon: String(n.appIcon || imageIcon || "").slice(0, 2048), desktopEntry: String(n.desktopEntry || "").slice(0, 2048),
             image: imageIcon ? "" : nativeImage, urgency: Number(n.urgency), transient: n.transient,
-            time: timestamp, actions: (n.actions || []).map(a => ({id: a.identifier, text: a.text}))};
+            time: timestamp, actions: (n.actions || []).map(a => ({id: a.identifier, text: a.text})),
+            hasInlineReply: n.hasInlineReply,
+            inlineReplyPlaceholder: String(n.inlineReplyPlaceholder || "").slice(0, 2048)};
     }
 
     function accept(n) {
@@ -153,8 +159,17 @@ Singleton {
         const screen = oldToast ? oldToast.screen : focusedScreen();
         if (!_centers[screen])
             _hasNew = true;
-        hideToast(uid);
-        showToast(uid, screen);
+        if (oldToast) {
+            // Keep the presentation UID and pause while an editor is open.
+            // Removing/reinserting it would discard focus and the reply draft.
+            const duration = Number(n.urgency) === 2 ? 0 : Settings.notificationToastDuration;
+            _toasts = _toasts.map(t => t.uid === uid ? Object.assign({}, t, {
+                remaining: duration, deadline: duration && !t.paused ? Date.now() + duration : 0
+            }) : t);
+            scheduleToasts();
+        } else {
+            showToast(uid, screen);
+        }
         prune();
         persist();
     }
@@ -168,10 +183,22 @@ Singleton {
         delete map[uid];
         _live = map;
         _records = _records.filter(r => r.uid !== uid || !r.transient)
-            .map(r => r.uid === uid ? Object.assign({}, r, {actions: [], image: ""}) : r);
+            .map(r => r.uid === uid ? Object.assign({}, r, {actions: [], image: "", hasInlineReply: false, inlineReplyPlaceholder: ""}) : r);
         if (_undo && _undo.uid === uid)
-            _undo = _undo.transient ? null : Object.assign({}, _undo, {actions: [], image: ""});
+            _undo = _undo.transient ? null : Object.assign({}, _undo, {actions: [], image: "", hasInlineReply: false, inlineReplyPlaceholder: ""});
         persist();
+    }
+
+    function reply(uid, text) {
+        const n = live(uid);
+        if (typeof text !== "string" || !text.trim() || text.length > 32768
+                || !record(uid) || !n || !n.tracked || !n.hasInlineReply)
+            return false;
+        // Native NotificationReplied goes back to the notification client.
+        // There is no delivery acknowledgement; never persist the reply text.
+        n.sendInlineReply(text);
+        hideToast(uid);
+        return true;
     }
 
     function retire(uid) {
@@ -226,11 +253,11 @@ Singleton {
 
     function pauseToast(uid, paused) {
         _toasts = _toasts.map(t => {
-            if (t.uid !== uid || t.paused === paused || (!t.deadline && !t.remaining))
+            if (t.uid !== uid || t.paused === paused)
                 return t;
-            const remaining = paused ? Math.max(1, t.deadline - Date.now()) : t.remaining;
+            const remaining = paused && t.deadline ? Math.max(1, t.deadline - Date.now()) : t.remaining;
             return Object.assign({}, t, {paused: paused, remaining: remaining,
-                deadline: paused ? 0 : Date.now() + remaining});
+                deadline: paused || !remaining ? 0 : Date.now() + remaining});
         });
         scheduleToasts();
     }
@@ -496,7 +523,7 @@ Singleton {
         bodyMarkupSupported: false
         bodyHyperlinksSupported: false
         bodyImagesSupported: false
-        inlineReplySupported: false
+        inlineReplySupported: true
         keepOnReload: true
         onNotification: notification => root.accept(notification)
     }
@@ -523,6 +550,8 @@ Singleton {
                 function onHintsChanged() { observer.changed.restart(); }
                 function onExpireTimeoutChanged() { observer.changed.restart(); }
                 function onActionsChanged() { observer.changed.restart(); }
+                function onHasInlineReplyChanged() { observer.changed.restart(); }
+                function onInlineReplyPlaceholderChanged() { observer.changed.restart(); }
                 function onClosed(reason) { observer.changed.stop(); root.closed(observer.modelData); }
             }
         }

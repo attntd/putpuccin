@@ -1,6 +1,8 @@
 module qs.modules.notifications
 NotificationTransition 1.0 NotificationTransition.qml
 NotificationCard 1.0 NotificationCard.qml
+NotificationReplyState 1.0 NotificationReplyState.qml
+NotificationReplyEditor 1.0 NotificationReplyEditor.qml
 NotificationText 1.0 NotificationText.qml
 NotificationCenter 1.0 NotificationCenter.qml
 NotificationToasts 1.0 NotificationToasts.qml

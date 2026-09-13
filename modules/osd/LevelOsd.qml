@@ -43,12 +43,13 @@ PanelWindow {
                 Text {
                     id: glyph
                     anchors.centerIn: parent
-                    text: OsdService.kind === "brightness" ? Icons.brightness : Icons.volumeHigh
+                    text: OsdService.kind === "brightness" ? Icons.brightness
+                        : (OsdService.kind === "microphone" ? Icons.microphone : Icons.volumeHigh)
                     color: OsdService.muted ? Theme.red : Theme.text
                     font.family: Metrics.fontFamily
                     font.pixelSize: Metrics.iconMedium
                     Rectangle {
-                        visible: OsdService.kind === "volume" && OsdService.muted
+                        visible: (OsdService.kind === "volume" || OsdService.kind === "microphone") && OsdService.muted
                         anchors.centerIn: parent
                         width: parent.font.pixelSize * 1.2
                         height: 2 * Metrics.borderWidth

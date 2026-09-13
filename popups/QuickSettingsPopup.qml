@@ -18,6 +18,8 @@ PopupFrame {
     }
 
     function openCaffeinate(keyboard) {
+        outputAudio.closeDevices();
+        inputAudio.closeDevices();
         caffeinateExpanded = true;
         if (keyboard) {
             const index = caffeinateModes.findIndex(entry => entry.id === CaffeinateService.mode);
@@ -26,14 +28,24 @@ PopupFrame {
     }
 
     Keys.onEscapePressed: {
-        if (caffeinateExpanded) {
+        if (outputAudio.expanded) {
+            outputAudio.closeDevices(Qt.BacktabFocusReason);
+        } else if (inputAudio.expanded) {
+            inputAudio.closeDevices(Qt.BacktabFocusReason);
+        } else if (caffeinateExpanded) {
             closeCaffeinate();
             caffeinateTile.forceActiveFocus(Qt.BacktabFocusReason);
         } else {
             SurfaceManager.closeOn(screenName);
         }
     }
-    onVisibleChanged: if (!visible) closeCaffeinate()
+    onVisibleChanged: {
+        if (!visible) {
+            closeCaffeinate();
+            outputAudio.closeDevices();
+            inputAudio.closeDevices();
+        }
+    }
 
     component Tile: ActionButton {
         borderless: true
@@ -77,16 +89,6 @@ PopupFrame {
                 onClicked: BluetoothService.setEnabled(!BluetoothService.enabled)
             }
             Tile {
-                objectName: "quickMicrophone"
-                text: Strings.microphone
-                glyph: Icons.microphone
-                glyphSlashed: AudioService.sourceMuted
-                destructive: AudioService.sourceMuted
-                enabled: AudioService.sourceAvailable
-                Accessible.name: text + ": " + (AudioService.sourceMuted ? Strings.disabled : Strings.enabled)
-                onClicked: AudioService.toggleSourceMute()
-            }
-            Tile {
                 objectName: "quickDnd"
                 text: Strings.notificationsDnd
                 glyph: Icons.notification
@@ -94,6 +96,14 @@ PopupFrame {
                 destructive: NotificationService.dnd
                 Accessible.name: text + ": " + (NotificationService.dnd ? Strings.enabled : Strings.disabled)
                 onClicked: NotificationService.toggleDnd()
+            }
+            Tile {
+                objectName: "quickScreenshot"
+                text: Strings.screenshot
+                glyph: Icons.screenshot
+                enabled: !LockService.locked && !LockService.releasing
+                Accessible.name: text
+                onClicked: ScreenshotService.begin("region", root.screenName)
             }
             Tile {
                 id: caffeinateTile
@@ -111,14 +121,6 @@ PopupFrame {
                     if (root.caffeinateExpanded) root.closeCaffeinate();
                     else root.openCaffeinate(!hovered);
                 }
-            }
-            Tile {
-                objectName: "quickScreenshot"
-                text: Strings.screenshot
-                glyph: Icons.screenshot
-                enabled: !LockService.locked && !LockService.releasing
-                Accessible.name: text
-                onClicked: ScreenshotService.begin("region", root.screenName)
             }
         }
         RevealSection {
@@ -192,30 +194,24 @@ PopupFrame {
                 }
             }
         }
-        RowLayout {
+        QuickAudioControl {
+            id: outputAudio
+            objectName: "quickOutputAudio"
             Layout.fillWidth: true
-            ActionButton {
-                objectName: "quickMute"
-                glyph: Icons.volumeHigh
-                glyphSlashed: AudioService.muted
-                destructive: AudioService.muted
-                borderless: true
-                implicitWidth: 42
-                enabled: AudioService.available
-                Accessible.name: Strings.volume
-                onClicked: AudioService.toggleMute()
+            onExpandedChanged: if (expanded) {
+                inputAudio.closeDevices();
+                root.closeCaffeinate();
             }
-            StatusSlider {
-                objectName: "quickVolume"
-                from: 0
-                to: 1
-                value: AudioService.volume
-                enabled: AudioService.available
-                Layout.fillWidth: true
-                Accessible.name: Strings.volume
-                onMoved: AudioService.setVolume(value)
+        }
+        QuickAudioControl {
+            id: inputAudio
+            objectName: "quickInputAudio"
+            input: true
+            Layout.fillWidth: true
+            onExpandedChanged: if (expanded) {
+                outputAudio.closeDevices();
+                root.closeCaffeinate();
             }
-            Percentage { text: Math.round(AudioService.volume * 100) + "%" }
         }
         RowLayout {
             Layout.fillWidth: true

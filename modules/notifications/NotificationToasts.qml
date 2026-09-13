@@ -15,6 +15,7 @@ PanelWindow {
     readonly property bool showUndo: NotificationService.canUndo && NotificationService.undoScreen === screenName
         && !SurfaceManager.isOpen("notifications", screenName)
     property string clickedUid: ""
+    NotificationReplyState { id: replies }
     NotificationTransition {
         id: transition
         uids: window.entries.map(entry => entry.uid)
@@ -23,10 +24,19 @@ PanelWindow {
 
     onEntriesChanged: {
         if (!entries.some(entry => entry.uid === clickedUid)) clickedUid = "";
+        if (!entries.some(entry => entry.uid === replies.uid)) replies.reset();
     }
     onVisibleChanged: if (!visible) {
         clickedUid = "";
+        replies.reset();
         transition.reset();
+    }
+    function keepReplyVisible(card) {
+        if (!card || !card.replyOpen)
+            return;
+        const bottom = card.y + card.height;
+        if (bottom > viewport.contentY + viewport.height)
+            viewport.contentY = Math.min(Math.max(0, viewport.contentHeight - viewport.height), bottom - viewport.height);
     }
     anchors { top: true; right: true }
     margins.top: Settings.topMargin + Settings.barHeight + Metrics.space8
@@ -40,7 +50,10 @@ PanelWindow {
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.namespace: "quickshell-de:notifications"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+    // Incoming toasts never steal focus. A deliberate reply click temporarily
+    // acquires the keyboard; OnDemand cannot focus a previously non-focusable
+    // surface on that same click.
+    WlrLayershell.keyboardFocus: replies.uid ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
     mask: Region { item: stack }
 
     Flickable {
@@ -63,14 +76,21 @@ PanelWindow {
                     id: toast
                     required property var modelData
                     notification: NotificationService.record(modelData.uid) || {uid: modelData.uid, appName: "", summary: "", body: "", time: 0, actions: []}
+                    replyState: replies
                     toast: true
                     managedReveal: true
                     revealSelected: window.clickedUid === modelData.uid
                     stackRevealProgress: transition.value(modelData.uid)
                     width: stack.width
-                    onControlsRequested: window.clickedUid = modelData.uid
+                    onControlsRequested: {
+                        if (replies.uid && replies.uid !== modelData.uid) replies.reset();
+                        window.clickedUid = modelData.uid;
+                    }
+                    onReplyFinished: if (window.clickedUid === modelData.uid) window.clickedUid = ""
+                    onHeightChanged: if (replyOpen) Qt.callLater(() => window.keepReplyVisible(toast))
                     onActivated: actionId => NotificationService.activate(modelData.uid, actionId)
                     onControlsRevealedChanged: NotificationService.pauseToast(modelData.uid, controlsRevealed)
+                    Component.onCompleted: NotificationService.pauseToast(modelData.uid, controlsRevealed)
                 }
             }
             Rectangle {

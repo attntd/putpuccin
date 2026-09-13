@@ -18,7 +18,7 @@ CONFIG = WORK / 'shell'
 for directory, names in {
     'core': ['Theme', 'Metrics', 'Motion', 'Strings', 'Icons'],
     'components': ['ActionButton', 'PopupFrame', 'RevealSection', 'StatusSlider'],
-    'popups': ['QuickSettingsPopup'],
+    'popups': ['QuickSettingsPopup', 'QuickAudioControl'],
     'modules/osd': ['LevelOsd'],
     'services': ['CaffeinateService', 'OsdService'],
 }.items():
@@ -46,9 +46,24 @@ property bool sourceAvailable: true
 property bool available: true
 property bool muted: false
 property real volume: 0.4
+property real sourceVolume: 0.6
+property QtObject speakers: QtObject { property string name: "speakers"; property string description: "Głośniki" }
+property QtObject headphones: QtObject { property string name: "headphones"; property string description: "Słuchawki USB" }
+property QtObject hdmi: QtObject { property string name: "hdmi"; property string description: "Monitor HDMI" }
+property QtObject bluetooth: QtObject { property string name: "bluetooth"; property string description: "Bardzo długa nazwa słuchawek Bluetooth do sprawdzenia pełnej etykiety" }
+property QtObject internal: QtObject { property string name: "internal"; property string description: "Mikrofon wbudowany" }
+property QtObject usb: QtObject { property string name: "usb"; property string description: "Mikrofon USB" }
+property var sinks: [speakers, headphones, hdmi, bluetooth]
+property var sources: [internal, usb]
+property var sink: sinks[0]
+property var source: sources[0]
 property string errorMessage: ""
 function toggleSourceMute() { sourceMuted = !sourceMuted; }
-function toggleMute() { muted = !muted; } function setVolume(value) {}''')
+function toggleMute() { muted = !muted; }
+function setVolume(value) { volume = value; }
+function setSourceVolume(value) { sourceVolume = value; }
+function selectSink(device) { sink = device; }
+function selectSource(device) { source = device; }''')
 stub('services', 'BrightnessService', '''property bool available: true
 property real percentage: 50
 property real sliderPercentage: 50
@@ -70,6 +85,7 @@ stub('services', 'LockService', 'property bool locked: false\nproperty bool rele
 bus = PrivateLogind(WORK)
 shutil.copytree(ROOT / 'integrations/SessionNative', CONFIG / 'integrations/SessionNative')
 shutil.copy2(ROOT / 'tests/fixtures/caffeinate.qml', CONFIG / 'shell.qml')
+shutil.copy2(ROOT / 'tests/fixtures/QuickAudioChecks.qml', CONFIG / 'QuickAudioChecks.qml')
 env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QT_QPA_PLATFORMTHEME='', NO_AT_BRIDGE='1',
            WAYLAND_DISPLAY='', HYPRLAND_INSTANCE_SIGNATURE='', DBUS_SESSION_BUS_ADDRESS=bus.address,
            DBUS_SYSTEM_BUS_ADDRESS=bus.address, QML_IMPORT_PATH=str(CONFIG / 'integrations'), XDG_RUNTIME_DIR=str(WORK / 'runtime'),
@@ -108,6 +124,24 @@ with (WORK / 'shell.log').open('w') as log:
         return dict(cpu_percent=round((after-ticks)/os.sysconf('SC_CLK_TCK')/(time.monotonic()-start)*100, 2), rss_kib=rss)
     try:
         wait_for(lambda: ipc('caffeinatetest', 'ready') == 'true')
+        if os.environ.get('QS_QUICK_AUDIO_ONLY') == '1':
+            checks = []
+            for reduced in (False, True):
+                result = json.loads(ipc('caffeinatetest', 'audio', reduced))
+                assert result['passed'], (result, str(WORK))
+                checks.append(result)
+            before = measure()
+            memory = []
+            for cycle in range(20):
+                result = json.loads(ipc('caffeinatetest', 'audioCycle'))
+                assert result['passed'], (result, str(WORK))
+                memory.append(int((Path('/proc') / str(proc.pid) / 'stat').read_text().split()[23])
+                    * os.sysconf('SC_PAGE_SIZE') // 1024)
+            result = dict(passed=True, checks=checks, before=before, after=measure(), rss_per_cycle_kib=memory)
+            (WORK / 'audio-result.json').write_text(json.dumps(result, indent=2))
+            print(json.dumps(dict(artifacts=str(WORK), **result), indent=2), flush=True)
+            assert not re.search(r'WARN scene|ReferenceError:|TypeError:|Binding loop', (WORK / 'shell.log').read_text())
+            sys.exit(0)
         if os.environ.get('QS_QUICK_TILES_ONLY') == '1':
             def alpha_image(path):
                 data = path.read_bytes()
@@ -147,6 +181,11 @@ with (WORK / 'shell.log').open('w') as log:
                 result['sameVolumeGlyph'] = all(alpha_image(WORK / ('volume-' + state + '.png'))
                     == alpha_image(WORK / ('osd-volume-' + state + '.png')) for state in ('on', 'off'))
                 result['passed'] = result['passed'] and result['sameVolumeGlyph']
+                result['sameMicrophoneGlyph'] = all(alpha_image(WORK / ('microphone-' + state + '.png'))
+                    == alpha_image(WORK / ('osd-microphone-' + state + '.png')) for state in ('on', 'off'))
+                result['microphone'] = json.loads(ipc('caffeinatetest', 'microphoneOsd'))
+                result['passed'] = result['passed'] and result['sameMicrophoneGlyph'] and result['microphone']['passed']
+                result['microphoneAfter'] = measure()
             (WORK / 'tiles-result.json').write_text(json.dumps(result, indent=2))
             print(json.dumps(result, indent=2), flush=True)
             assert result['passed'], 'Quick-settings icon silhouette or content moved while toggling'

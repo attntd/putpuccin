@@ -14,6 +14,7 @@ FocusScope {
     property bool confirmingClear: false
     property string clickedUid: ""
     property string keyboardUid: ""
+    NotificationReplyState { id: replies }
     readonly property string selectedUid: keyboardUid || clickedUid
     readonly property var displayedUids: {
         const uids = [];
@@ -39,10 +40,13 @@ FocusScope {
     onDisplayedUidsChanged: {
         if (displayedUids.indexOf(clickedUid) < 0) clickedUid = "";
         if (displayedUids.indexOf(keyboardUid) < 0) keyboardUid = "";
+        const replying = replies.uid ? NotificationService.record(replies.uid) : null;
+        if (displayedUids.indexOf(replies.uid) < 0 || !replying || !replying.hasInlineReply) replies.reset();
     }
     onVisibleChanged: if (!visible) {
         clickedUid = "";
         keyboardUid = "";
+        replies.reset();
         transition.reset();
     }
 
@@ -54,6 +58,14 @@ FocusScope {
     function activate(uid, action) {
         SurfaceManager.closeOn(screenName);
         NotificationService.activate(uid, action);
+    }
+    function keepReplyVisible(card) {
+        if (!card || !card.replyOpen)
+            return;
+        list.forceLayout();
+        const bottom = card.mapToItem(list.contentItem, 0, card.height).y;
+        if (bottom > list.contentY + list.height)
+            list.contentY = Math.min(Math.max(0, list.contentHeight - list.height), bottom - list.height);
     }
     onHasHistoryChanged: {
         if (!hasHistory) {
@@ -234,6 +246,7 @@ FocusScope {
                     // card heights and the ListView's group positions.
                     y: (previousCard ? previousCard.y + previousCard.height : groupHeader.implicitHeight) + Metrics.space6
                     notification: modelData
+                    replyState: replies
                     managedReveal: true
                     revealSelected: root.selectedUid === modelData.uid
                     stackRevealProgress: transition.value(modelData.uid)
@@ -241,7 +254,17 @@ FocusScope {
                         if (keyboardFocusWithin) root.keyboardUid = modelData.uid;
                         else if (root.keyboardUid === modelData.uid) root.keyboardUid = "";
                     }
-                    onControlsRequested: { root.keyboardUid = ""; root.clickedUid = modelData.uid; }
+                    onControlsRequested: {
+                        if (replies.uid && replies.uid !== modelData.uid) replies.reset();
+                        root.keyboardUid = "";
+                        root.clickedUid = modelData.uid;
+                    }
+                    onReplyStarted: SurfaceManager.pinNotifications(root.screenName)
+                    onHeightChanged: if (replyOpen) Qt.callLater(() => root.keepReplyVisible(card))
+                    onReplyFinished: {
+                        if (root.clickedUid === modelData.uid) root.clickedUid = "";
+                        if (root.keyboardUid === modelData.uid) root.keyboardUid = "";
+                    }
                     onActivated: actionId => root.activate(modelData.uid, actionId)
                 }
             }

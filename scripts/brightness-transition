@@ -14,7 +14,12 @@ def bounded(value):
     value = float(value)
     if not math.isfinite(value):
         raise ValueError("Invalid brightness")
-    return max(1, min(100, value))
+    return 0 if value <= 0 else max(1, min(100, value))
+
+
+def raw_target(maximum, percentage):
+    percentage = bounded(percentage)
+    return 0 if percentage == 0 else max(1, math.floor(maximum * percentage / 100 + .5))
 
 
 def interpolate(start, target, elapsed, duration):
@@ -34,7 +39,7 @@ def transition(device, target, duration, sys_root=Path('/sys/class/backlight'), 
         session = bus.get_object('org.freedesktop.login1', '/org/freedesktop/login1/session/auto', introspect=False)
         set_brightness = session.get_dbus_method('SetBrightness', 'org.freedesktop.login1.Session')
         apply = lambda raw: set_brightness('backlight', device, dbus.UInt32(raw), timeout=1)
-    target_raw = max(1, math.floor(maximum * bounded(target) / 100 + .5))
+    target_raw = raw_target(maximum, target)
     start = current
     began = time.monotonic()
     buffer = b''
@@ -66,7 +71,7 @@ def transition(device, target, duration, sys_root=Path('/sys/class/backlight'), 
             lines = buffer.split(b'\n')
             buffer = lines.pop()
             if lines:
-                target_raw = max(1, math.floor(maximum * bounded(lines[-1]) / 100 + .5))
+                target_raw = raw_target(maximum, lines[-1])
                 start = current
                 began = last_input = time.monotonic()
 

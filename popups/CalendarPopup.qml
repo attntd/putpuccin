@@ -33,33 +33,6 @@ PopupFrame {
 
         RowLayout {
             Layout.fillWidth: true
-
-            Text {
-                text: root.polishLocale.toString(clock.date, "dddd, d MMMM yyyy")
-                color: Theme.text
-                font.family: Metrics.fontFamily
-                font.pixelSize: Metrics.fontTitle
-                fontSizeMode: Text.HorizontalFit
-                minimumPixelSize: Metrics.fontSmall
-                font.weight: Font.Bold
-                Layout.fillWidth: true
-                Layout.minimumWidth: 0
-                Layout.alignment: Qt.AlignVCenter
-            }
-
-            Text {
-                text: root.polishLocale.toString(clock.date, Settings.clockFormat)
-                color: Theme.accent
-                font.family: Metrics.fontFamily
-                font.pixelSize: Metrics.fontTitle
-                font.weight: Font.Bold
-                horizontalAlignment: Text.AlignRight
-                Layout.alignment: Qt.AlignVCenter
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
             ActionButton {
                 text: "‹"
                 borderless: true

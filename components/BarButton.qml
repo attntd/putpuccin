@@ -12,6 +12,7 @@ Item {
     property bool warning: false
     property bool compact: false
     property bool iconAtEnd: false
+    property bool iconSlashed: false
     property color foreground: warning ? Theme.warning : Theme.text
     property color iconForeground: foreground
 
@@ -36,6 +37,18 @@ Item {
             font.family: Metrics.fontFamily
             font.pixelSize: Metrics.iconMedium
             Layout.alignment: Qt.AlignVCenter
+
+            Rectangle {
+                // Keep the base glyph and its layout unchanged across states.
+                visible: root.iconSlashed
+                anchors.centerIn: parent
+                width: parent.font.pixelSize * 1.2
+                height: 2 * Metrics.borderWidth
+                radius: height / 2
+                rotation: 45
+                antialiasing: true
+                color: parent.color
+            }
         }
 
         Text {

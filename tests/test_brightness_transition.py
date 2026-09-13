@@ -18,12 +18,12 @@ module.transition('test', float(sys.argv[3]), .18, sys_root=Path(sys.argv[2]), a
 '''
 
 class BrightnessTransitionTests(unittest.TestCase):
-    def start(self, target, initial=200):
+    def start(self, target, initial=200, maximum=1000):
         work = tempfile.TemporaryDirectory()
         self.addCleanup(work.cleanup)
         path = Path(work.name) / 'test'
         path.mkdir()
-        (path / 'max_brightness').write_text('1000')
+        (path / 'max_brightness').write_text(str(maximum))
         (path / 'brightness').write_text(str(initial))
         process = subprocess.Popen([sys.executable, '-B', '-c', WORKER, str(SCRIPT), work.name, str(target)],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -62,8 +62,32 @@ class BrightnessTransitionTests(unittest.TestCase):
         self.assertEqual(self.finish(self.start(20.05))[-1], 201)
 
     def test_bounds(self):
-        self.assertEqual(self.finish(self.start(-5))[-1], 10)
+        self.assertEqual(self.finish(self.start(-5))[-1], 0)
         self.assertEqual(self.finish(self.start(200))[-1], 1000)
+
+    def test_zero_turns_backlight_fully_off(self):
+        values = self.finish(self.start(0, initial=5, maximum=496))
+        self.assertEqual(values[-1], 0)
+        self.assertEqual(values, sorted(values, reverse=True))
+        self.assertTrue(all(0 <= value <= 5 for value in values))
+
+    def test_positive_minimum_restores_light_from_zero(self):
+        self.assertEqual(self.finish(self.start(1, initial=0, maximum=496))[-1], 5)
+        self.assertEqual(self.finish(self.start(.1, initial=0, maximum=10))[-1], 1)
+
+    def test_zero_can_be_retargeted_to_visible_level(self):
+        process = self.start(0)
+        self.assertLess(json.loads(process.stdout.readline())['raw'], 200)
+        process.stdin.write('1\n')
+        process.stdin.flush()
+        self.assertEqual(self.finish(process)[-1], 10)
+
+    def test_active_transition_can_retarget_to_zero(self):
+        process = self.start(80)
+        process.stdout.readline()
+        process.stdin.write('1\n0\n')
+        process.stdin.flush()
+        self.assertEqual(self.finish(process)[-1], 0)
 
     def test_non_finite_target_is_rejected(self):
         process = self.start('nan')

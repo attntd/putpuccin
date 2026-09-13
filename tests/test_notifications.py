@@ -75,6 +75,34 @@ try:
     start()
     assert not state()['error'], state()
     assert 'persistence' in call('GetCapabilities') and 'actions' in call('GetCapabilities')
+    assert 'inline-reply' in call('GetCapabilities')
+    r = notify('Quick reply', actions=['default', 'Open', 'inline-reply', 'Write back'])
+    assert r['hasInlineReply'] and r['inlineReplyPlaceholder'] == 'Write back'
+    assert [action['id'] for action in r['actions']] == ['default']
+    assert ipc('reply', r['uid'], '   ') == 'false'
+    assert ipc('reply', 'missing-notification', 'No recipient') == 'false'
+    reply_text = 'Testowa odpowiedź: Zażółć gęślą jaźń 👋'
+    assert ipc('reply', r['uid'], reply_text) == 'true'
+    until(lambda: not state()['records'][0]['hasInlineReply'])
+    until(lambda: 'NotificationReplied' in (work / 'signals.log').read_text())
+    reply_signals = (work / 'signals.log').read_text()
+    assert reply_text in reply_signals and f'uint32 {r["serverId"]}' in reply_signals
+    assert 'ActionInvoked' not in reply_signals
+    assert not state()['toasts']
+    assert ipc('reply', r['uid'], 'Closed sender') == 'false'
+    r = notify('No reply action', app='Signal')
+    assert not r['hasInlineReply'] and ipc('reply', r['uid'], 'Unsupported') == 'false'
+    ipc('clear')
+    r = notify('Resident reply', actions=['inline-reply', ''], hints="{'resident': <true>}")
+    assert ipc('reply', r['uid'], reply_text) == 'true'
+    assert state()['records'][0]['hasInlineReply'] and not state()['toasts']
+    time.sleep(.4)
+    assert reply_text not in state_path.read_text()
+    assert 'hasInlineReply' not in state_path.read_text() and 'inlineReplyPlaceholder' not in state_path.read_text()
+    call('CloseNotification', str(r['serverId']))
+    until(lambda: not state()['records'][0]['hasInlineReply'])
+    check('native inline reply, Unicode payload, empty/stale/unsupported rejection, resident lifecycle and private history')
+    ipc('clear')
     r = notify(actions=['default', 'Otwórz', 'archive', 'Archiwizuj'])
     assert state()['hasNew'] and len(state()['toasts']) == 1
     assert state()['toasts'][0]['remaining'] == 6000
@@ -139,7 +167,7 @@ try:
     check('group ordering, app/body search, immediate retention count limit')
 
     ipc('clear'); ipc('limit', 500)
-    r = notify('Reload live', actions=['default','Open','secondary','Run'])
+    r = notify('Reload live', actions=['default','Open','secondary','Run','inline-reply','Reply'])
     transient = notify('Secret transient', hints="{'transient': <true>}")
     ipc('dnd', True)
     time.sleep(.5)
@@ -157,11 +185,13 @@ try:
     assert len([v for v in state()['records'] if v['summary'] == 'Reload live']) == 1
     live = next(v for v in state()['records'] if v['summary'] == 'Reload live')
     assert live['uid'] == r['uid'] and live['actions']
+    assert live['hasInlineReply']
     ipc('activate', live['uid'], 'secondary')
     time.sleep(.4)
     stop(); start()
     assert state()['dnd'] and not state()['toasts']
     assert len(state()['records']) == 1 and not state()['records'][0]['actions']
+    assert not state()['records'][0]['hasInlineReply']
     check('private atomic persistence, transient exclusion, reload live actions, restart archive/DND')
 
     ipc('clear')

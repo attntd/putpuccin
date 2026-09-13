@@ -20,10 +20,10 @@ Item {
     BarButton {
         id: button
         anchors.fill: parent
-        icon: NetworkService.wiredDevice ? Icons.ethernet : NetworkService.connected ? Icons.wifi : Icons.wifiOff
-        iconForeground: NetworkService.connected
-            ? Theme.accent : NetworkService.wifiEnabled
-            ? Theme.blue : Theme.text
+        icon: NetworkService.wiredDevice ? Icons.ethernet : Icons.wifi
+        iconSlashed: !NetworkService.wiredDevice && !NetworkService.wifiEnabled
+        iconForeground: NetworkService.wiredDevice || (NetworkService.wifiEnabled && NetworkService.connected)
+            ? Theme.accent : Theme.text
         text: Settings.option("network", "presentation", "adaptive") === "label" ? (NetworkService.displayName || Strings.network) : ""
         compact: Settings.option("network", "presentation", "adaptive") !== "label"
         warning: !NetworkService.available

@@ -21,6 +21,9 @@ Singleton {
     property bool eventWatcherDesired: true
 
     readonly property bool available: state === "ready"
+    readonly property int minimumVisibleRaw: Math.max(1, Math.round(maximumBrightness / 100))
+    readonly property int targetRawBrightness: targetPercentage === 0 ? 0
+        : Math.max(1, Math.round(maximumBrightness * targetPercentage / 100))
 
     function refresh() {
         if (readProcess.running || commandPending)
@@ -32,7 +35,7 @@ Singleton {
     function setPercentage(value) {
         if (!root.available || !Number.isFinite(value))
             return;
-        root.targetPercentage = Math.max(1, Math.min(100, value));
+        root.targetPercentage = value <= 0 ? 0 : Math.max(1, Math.min(100, value));
         commandTimeout.restart();
         if (commandProcess.running) {
             commandProcess.write(root.targetPercentage + "\n");
@@ -53,7 +56,17 @@ Singleton {
     }
 
     function adjust(delta) {
-        root.setPercentage(root.sliderPercentage + delta);
+        if (!root.available || !Number.isFinite(delta) || delta === 0)
+            return;
+        const current = root.sliderPercentage;
+        // Reach the visible minimum first, then turn off on the next step.
+        // Compare raw levels after settling: 1% may round above 1 on hardware.
+        const atMinimum = (root.commandPending ? root.targetRawBrightness : root.rawBrightness)
+            <= root.minimumVisibleRaw;
+        if (delta < 0)
+            root.setPercentage(atMinimum ? 0 : Math.max(1, current + delta));
+        else
+            root.setPercentage(current === 0 ? 1 : current + delta);
     }
 
     Process {
@@ -133,7 +146,7 @@ Singleton {
                 return;
             }
             // A request can arrive between the helper's final read and exit.
-            if (root.rawBrightness !== Math.max(1, Math.round(root.maximumBrightness * root.targetPercentage / 100))) {
+            if (root.rawBrightness !== root.targetRawBrightness) {
                 Qt.callLater(() => root.startTransition());
                 return;
             }

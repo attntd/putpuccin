@@ -13,3 +13,4 @@ PowerPopup 1.0 PowerPopup.qml
 TrayPopup 1.0 TrayPopup.qml
 WindowPopup 1.0 WindowPopup.qml
 QuickSettingsPopup 1.0 QuickSettingsPopup.qml
+QuickAudioControl 1.0 QuickAudioControl.qml

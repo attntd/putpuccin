@@ -63,6 +63,9 @@ Singleton {
     readonly property string screenshotOpen: "Otwórz"
     readonly property string microphone: "Mikrofon"
     readonly property string volume: "Głośność"
+    readonly property string audioDeviceHoldHint: "Przytrzymaj ikonę przez 1 s, aby wybrać urządzenie (klawiatura: ↓)."
+    readonly property string noAudioInputs: "Brak urządzeń wejściowych"
+    readonly property string noAudioOutputs: "Brak urządzeń wyjściowych"
     readonly property string unavailable: "Usługa niedostępna"
     readonly property string loading: "Ładowanie…"
     readonly property string error: "Wystąpił błąd"
@@ -301,6 +304,11 @@ Singleton {
     readonly property string notificationsExpand: "Rozwiń powiadomienie"
     readonly property string notificationsCollapse: "Zwiń powiadomienie"
     readonly property string notificationsOpen: "Otwórz powiadomienie"
+    readonly property string notificationsOpenApp: "Otwórz"
+    readonly property string notificationsReply: "Odpowiedz"
+    readonly property string notificationsReplyPlaceholder: "Napisz odpowiedź…"
+    readonly property string notificationsReplySend: "Wyślij"
+    readonly property string notificationsReplyUnavailable: "Nie można już odpowiedzieć na to powiadomienie."
 
     function screenshotPixels(width, height) {
         return width + " × " + height + " px";

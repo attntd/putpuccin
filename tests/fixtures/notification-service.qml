@@ -17,6 +17,7 @@ ShellRoot {
         function center(screen: string, value: bool): void { NotificationService.setCenterOpen(screen, value); }
         function pause(uid: string, value: bool): void { NotificationService.pauseToast(uid, value); }
         function activate(uid: string, action: string): void { NotificationService.activate(uid, action); }
+        function reply(uid: string, text: string): bool { return NotificationService.reply(uid, text); }
         function clear(): void { NotificationService.clearAll(); }
         function groups(query: string): string { return JSON.stringify(NotificationService.groups(query)); }
         function limit(value: int): void { Settings.notificationHistoryLimit = value; }

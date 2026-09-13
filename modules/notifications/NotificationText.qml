@@ -11,7 +11,9 @@ Item {
     property alias color: preview.color
     readonly property bool truncated: preview.truncated
     property real expansion: expanded ? 1 : 0
-    readonly property real expandedHeight: fullText.item ? fullText.item.implicitHeight : preview.implicitHeight
+    // Use the loader's settled size. Reading Text.implicitHeight directly can
+    // re-enter wrapping while the native layout is assigning its first width.
+    readonly property real expandedHeight: fullText.status === Loader.Ready ? fullText.implicitHeight : preview.implicitHeight
     implicitHeight: preview.implicitHeight + expansion * (expandedHeight - preview.implicitHeight)
     clip: expansion > 0 && expansion < 1
 
@@ -48,6 +50,7 @@ Item {
         visible: root.expansion > 0
         // Keep full text until collapse finishes, then release its layout.
         sourceComponent: Text {
+            width: fullText.width
             text: root.text
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
