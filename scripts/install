@@ -36,7 +36,7 @@ LOCK_OBSERVER = Path("integrations/LockObserver/lock-observer")
 RUNTIME_SCRIPTS = (
     "brightness-transition", "caffeinate-hold", "caffeinate-idle",
     "check-dependencies", "clipboard-action", "clipboard-store",
-    "fingerprint-enrolled", "lock-screen", "notification-state",
+    "fingerprint-enrolled", "launcher-state", "lock-screen", "notification-state",
     "power-capabilities", "screenshot-action", "ssh-askpass",
     "terminal-context", "terminal-cwd",
 )

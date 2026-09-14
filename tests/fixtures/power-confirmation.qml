@@ -182,6 +182,33 @@ ShellRoot {
                 check(SystemActions.executed.join() === "poweroff", "Keyboard confirmation failed");
                 settle();
 
+                // Vim navigation preserves the confirmation step.
+                SystemActions.reset();
+                loader.item.focusDefaultControl();
+                check(button(Strings.lock).activeFocus, "Opening did not select the first action");
+                keyClick(Qt.Key_J);
+                check(button(Strings.logout).activeFocus, "J did not select Logout");
+                keyClick(Qt.Key_Return); settle();
+                check(loader.item.confirmation === "logout" && !SystemActions.executed.length,
+                    "Enter skipped the confirmation step");
+                keyClick(Qt.Key_J);
+                check(button(Strings.cancel).activeFocus, "J did not select Cancel");
+                keyClick(Qt.Key_L);
+                check(button(Strings.confirm).activeFocus, "L did not select Confirm");
+                keyClick(Qt.Key_H);
+                check(button(Strings.cancel).activeFocus, "H did not return to Cancel");
+                keyClick(Qt.Key_Escape); settle();
+                check(!loader.item.confirmation && button(Strings.logout).activeFocus,
+                    "Escape did not cancel and restore focus");
+                SystemActions.unavailableAction = "suspend";
+                keyClick(Qt.Key_J);
+                check(button(Strings.hibernate).activeFocus, "J did not skip the unavailable action");
+                keyClick(Qt.Key_K);
+                check(button(Strings.logout).activeFocus, "K did not skip the unavailable action");
+                keyClick(Qt.Key_Return); settle();
+                keyClick(Qt.Key_J); keyClick(Qt.Key_L); keyClick(Qt.Key_Return); settle();
+                check(SystemActions.executed.join() === "logout", "Vim confirmation did not execute once");
+
                 // Unconfirmed actions keep their existing execution policy.
                 for (const entry of [["lock", Strings.lock], ["suspend", Strings.suspend], ["hibernate", Strings.hibernate]]) {
                     SystemActions.reset();

@@ -72,7 +72,6 @@ Button {
                 font.family: Metrics.fontFamily
                 font.pixelSize: Metrics.fontBody
                 font.weight: Font.DemiBold
-                font.underline: root.borderless && root.visualFocus
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
                 Layout.fillWidth: true
@@ -82,13 +81,14 @@ Button {
 
     background: Rectangle {
         radius: 10
-        border.width: root.borderless ? 0 : Metrics.borderWidth
-        border.color: root.activeFocus ? Theme.accent
-            : root.destructive ? Theme.withAlpha(Theme.red, 0.7)
-            : root.accent ? Theme.accent : Theme.surface1
+        border.width: root.borderless && !(root.visualFocus || root.highlighted) ? 0 : Metrics.borderWidth
+        border.color: root.destructive ? Theme.withAlpha(Theme.red, 0.7)
+            : root.accent ? Theme.accent
+            : root.visualFocus || root.highlighted ? Theme.withAlpha(Theme.text, 0.55)
+            : root.activeFocus ? Theme.accent : Theme.surface1
         color: Theme.controlBackground(root.destructive ? Theme.red
             : root.accent ? Theme.accent : Theme.text,
-            root.hovered || (root.borderless && root.visualFocus), root.down, root.accent)
+            root.hovered || root.highlighted || (root.borderless && root.visualFocus), root.down, root.accent)
         opacity: root.enabled ? 1 : 0.42
     }
 }

@@ -41,6 +41,10 @@ ListView {
     Keys.onSpacePressed: activateCurrent()
     Keys.onRightPressed: { if (!pairingList && currentItem) currentItem.manage(); }
     Keys.onPressed: event => {
+        if (event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) return;
+        if (event.key === Qt.Key_L && !pairingList && currentItem) {
+            currentItem.manage(); event.accepted = true;
+        }
         if (event.key === Qt.Key_Home) {
             currentIndex = 0; positionViewAtBeginning(); event.accepted = true;
         } else if (event.key === Qt.Key_End) {

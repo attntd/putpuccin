@@ -17,7 +17,7 @@ WORK = Path(tempfile.mkdtemp(prefix='quickshell-caffeinate-test-'))
 CONFIG = WORK / 'shell'
 for directory, names in {
     'core': ['Theme', 'Metrics', 'Motion', 'Strings', 'Icons'],
-    'components': ['ActionButton', 'PopupFrame', 'RevealSection', 'StatusSlider'],
+    'components': ['ActionButton', 'PopupFrame', 'KeyboardNavigation', 'RevealSection', 'StatusSlider'],
     'popups': ['QuickSettingsPopup', 'QuickAudioControl'],
     'modules/osd': ['LevelOsd'],
     'services': ['CaffeinateService', 'OsdService'],
@@ -40,7 +40,7 @@ def stub(directory, name, body):
         f.write(f'singleton {name} 1.0 {name}.qml\n')
 
 stub('core', 'Settings', 'property bool reducedMotion: false\nproperty real surfaceOpacity: 0.9\nproperty real interactiveOpacity: 0')
-stub('core', 'SurfaceManager', 'property int closed: 0\nfunction closeOn(screenName) { closed++; }\nfunction focusedScreenName() { return "caffeinate-test"; }')
+stub('core', 'SurfaceManager', 'property int closed: 0\nproperty string opened: ""\nfunction openOn(surface, screen) { opened = surface; }\nfunction closeOn(screenName) { closed++; }\nfunction focusedScreenName() { return "caffeinate-test"; }')
 stub('services', 'AudioService', '''property bool sourceMuted: false
 property bool sourceAvailable: true
 property bool available: true
@@ -71,8 +71,9 @@ property string errorMessage: ""
 function setPercentage(value) {}''')
 stub('services', 'NetworkService', '''property bool available: true
 property bool wifiEnabled: true
+property var wiredDevice: null
 property string errorMessage: ""
-function setWifiEnabled(value) {}''')
+function setWifiEnabled(value) { wifiEnabled = value; }''')
 stub('services', 'BluetoothService', '''property bool available: true
 property bool enabled: true
 property string state: "ready"
@@ -124,6 +125,9 @@ with (WORK / 'shell.log').open('w') as log:
         return dict(cpu_percent=round((after-ticks)/os.sysconf('SC_CLK_TCK')/(time.monotonic()-start)*100, 2), rss_kib=rss)
     try:
         wait_for(lambda: ipc('caffeinatetest', 'ready') == 'true')
+        if not baseline:
+            keyboard = json.loads(ipc('caffeinatetest', 'keyboard'))
+            assert keyboard['passed'], (keyboard, str(WORK))
         if os.environ.get('QS_QUICK_AUDIO_ONLY') == '1':
             checks = []
             for reduced in (False, True):

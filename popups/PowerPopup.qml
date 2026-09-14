@@ -9,7 +9,21 @@ import qs.services
 PopupFrame {
     id: root
     required property string screenName
+    keyboardNavigationEnabled: true
     property string confirmation: ""
+    property Item confirmationControl: null
+
+    function cancelConfirmation() {
+        root.confirmation = "";
+        if (confirmationControl) confirmationControl.forceActiveFocus(Qt.BacktabFocusReason);
+    }
+    Keys.onShortcutOverride: event => {
+        if (event.key === Qt.Key_Escape && confirmation) event.accepted = true;
+    }
+    Keys.onEscapePressed: {
+        if (confirmation) cancelConfirmation();
+        else SurfaceManager.closeOn(screenName);
+    }
 
     function request(actionId) {
         if (SystemActions.busy || !SystemActions.available(actionId))
@@ -43,7 +57,10 @@ PopupFrame {
             id: actionButton
             borderless: true
             Layout.fillWidth: true
-            onClicked: root.request(actionRow.actionId)
+            onClicked: {
+                root.confirmationControl = actionButton;
+                root.request(actionRow.actionId);
+            }
         }
 
         RevealSection {
@@ -61,10 +78,7 @@ PopupFrame {
                     borderless: true
                     Layout.fillWidth: true
                     Layout.preferredWidth: 1
-                    onClicked: {
-                        root.confirmation = "";
-                        actionButton.forceActiveFocus(Qt.OtherFocusReason);
-                    }
+                    onClicked: root.cancelConfirmation()
                 }
                 ActionButton {
                     text: Strings.confirm

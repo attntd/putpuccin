@@ -6,6 +6,7 @@ singleton BluetoothService 1.0 BluetoothService.qml
 singleton BrightnessService 1.0 BrightnessService.qml
 singleton ClipboardService 1.0 ClipboardService.qml
 singleton HyprlandService 1.0 HyprlandService.qml
+singleton LauncherHistory 1.0 LauncherHistory.qml
 singleton MediaService 1.0 MediaService.qml
 singleton ModuleActions 1.0 ModuleActions.qml
 singleton NetworkService 1.0 NetworkService.qml

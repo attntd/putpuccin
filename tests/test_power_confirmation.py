@@ -19,7 +19,7 @@ work = Path(tempfile.mkdtemp(prefix="quickshell-power-confirm-"))
 config = work / "shell"
 modules = {
     "core": ["Theme", "Metrics", "Motion", "Strings", "Icons"],
-    "components": ["ActionButton", "PopupFrame", "RevealSection"],
+    "components": ["ActionButton", "PopupFrame", "KeyboardNavigation", "RevealSection"],
     "popups": ["PowerPopup"],
 }
 for directory, names in modules.items():

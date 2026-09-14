@@ -31,6 +31,59 @@ FocusScope {
         + footer.implicitHeight + Metrics.space24)
     activeFocusOnTab: true
     Keys.onEscapePressed: SurfaceManager.closeOn(screenName)
+    Keys.onPressed: event => {
+        if (event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) return;
+        const focused = navigation.focusedItem();
+        if (navigation.isEditor(focused)) return;
+        let card = focused;
+        while (card && card !== root && !(card instanceof NotificationCard)) card = card.parent;
+        if (event.key === Qt.Key_Slash && root.hasHistory) {
+            root.searchFocusRequested();
+            search.forceActiveFocus(Qt.ShortcutFocusReason);
+        } else if (card instanceof NotificationCard && (event.key === Qt.Key_J || event.key === Qt.Key_K)) {
+            const index = displayedUids.indexOf(card.notification.uid) + (event.key === Qt.Key_J ? 1 : -1);
+            if (index < 0) dndButton.forceActiveFocus(Qt.BacktabFocusReason);
+            else if (index < displayedUids.length) focusNotification(displayedUids[index]);
+        } else if (card instanceof NotificationCard && (event.key === Qt.Key_H || event.key === Qt.Key_L)) {
+            const controls = [card].concat(navigation.controls().filter(item => item !== card && navigation.contains(item, card)));
+            const index = Math.max(0, controls.indexOf(focused)) + (event.key === Qt.Key_L ? 1 : -1);
+            controls[Math.max(0, Math.min(controls.length - 1, index))].forceActiveFocus(Qt.TabFocusReason);
+            keepKeyboardVisible(card);
+        } else {
+            navigation.handleKey(event);
+            return;
+        }
+        event.accepted = true;
+    }
+
+    KeyboardNavigation { id: navigation; scope: root }
+    function focusDefaultControl() { navigation.focusFirst(); }
+
+    function focusNotification(uid) {
+        const index = groups.findIndex(group => group.records.some(record => record.uid === uid));
+        if (index < 0) return;
+        list.positionViewAtIndex(index, ListView.Contain);
+        list.forceLayout();
+        const group = list.itemAtIndex(index);
+        if (!group) return;
+        for (let i = 0; i < group.notificationCards.count; i++) {
+            const card = group.notificationCards.itemAt(i);
+            if (card.notification.uid === uid) {
+                card.forceActiveFocus(Qt.TabFocusReason);
+                keepKeyboardVisible(card);
+                return;
+            }
+        }
+    }
+
+    function keepKeyboardVisible(card) {
+        if (!card || !card.keyboardFocusWithin || card.replyOpen) return;
+        const item = navigation.focusedItem();
+        const top = item.mapToItem(list.contentItem, 0, 0).y;
+        const bottom = top + Math.min(item.height, list.height);
+        if (top < list.contentY) list.contentY = top;
+        else if (bottom > list.contentY + list.height) list.contentY = bottom - list.height;
+    }
 
     NotificationTransition {
         id: transition
@@ -76,7 +129,7 @@ FocusScope {
     Component.onCompleted: {
         NotificationService.setCenterOpen(screenName, true);
         if (SurfaceManager.notificationsPinned(screenName))
-            Qt.callLater(() => dndButton.forceActiveFocus());
+            Qt.callLater(focusDefaultControl);
     }
     Component.onDestruction: NotificationService.setCenterOpen(screenName, false)
 
@@ -116,6 +169,10 @@ FocusScope {
                 onSearchFocusRequested: root.searchFocusRequested()
                 Layout.fillWidth: true
                 placeholderText: Strings.notificationsSearch
+                Keys.onShortcutOverride: event => {
+                    if (event.key === Qt.Key_Escape) event.accepted = true;
+                }
+                Keys.onEscapePressed: root.focusDefaultControl()
                 onActiveFocusChanged: {
                     if (activeFocus && focusReason !== Qt.MouseFocusReason)
                         SurfaceManager.pinNotifications(root.screenName);
@@ -260,7 +317,10 @@ FocusScope {
                         root.clickedUid = modelData.uid;
                     }
                     onReplyStarted: SurfaceManager.pinNotifications(root.screenName)
-                    onHeightChanged: if (replyOpen) Qt.callLater(() => root.keepReplyVisible(card))
+                    onHeightChanged: Qt.callLater(() => {
+                        root.keepReplyVisible(card);
+                        root.keepKeyboardVisible(card);
+                    })
                     onReplyFinished: {
                         if (root.clickedUid === modelData.uid) root.clickedUid = "";
                         if (root.keyboardUid === modelData.uid) root.keyboardUid = "";

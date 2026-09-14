@@ -33,7 +33,7 @@ Slider {
         implicitWidth: 16
         implicitHeight: 16
         radius: 8
-        color: Theme.withAlpha(root.pressed ? Theme.lavender : Theme.accent, 0.65)
+        color: Theme.withAlpha(root.pressed ? Theme.lavender : Theme.accent, root.visualFocus ? 1 : 0.65)
         border.width: 0
     }
 }

@@ -32,6 +32,8 @@ Item {
         LauncherPopup {
             screenName: root.screenName
             embedded: true
+            maximumHeight: Math.max(0, (root.shellScreen ? root.shellScreen.height : 900)
+                - Settings.topMargin - Settings.barHeight - Metrics.launcherScreenMargin)
             onSearchFocusRequested: root.barWindow.activateLauncherSearch()
         }
     }

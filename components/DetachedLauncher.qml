@@ -16,8 +16,11 @@ PanelWindow {
     readonly property int launcherWidth: Math.min(560, Math.max(320, width - Metrics.space16 * 2))
     readonly property int collapsedLauncherHeight: launcherLoader.item
         ? launcherLoader.item.collapsedHeight : Metrics.controlHeight + Metrics.popupPadding * 2
+    readonly property real preferredLauncherHeight: launcherLoader.item
+        ? launcherLoader.item.preferredHeight : collapsedLauncherHeight
     readonly property bool geometryReady: width >= 320
         && height >= Metrics.controlHeight + Metrics.popupPadding * 2
+    onRequestedChanged: if (!requested) heightAnimation.stop()
 
     visible: requested
     // This full-screen tint also enables the compositor's existing layer blur.
@@ -44,15 +47,18 @@ PanelWindow {
         width: root.launcherWidth
         height: root.requested && launcherLoader.item ? launcherLoader.item.implicitHeight : 0
         anchors.horizontalCenter: parent.horizontalCenter
-        y: Math.max(Metrics.space16,
-            Math.round(root.height * (1 - Settings.launcherPositionFromBottom)
-                - root.collapsedLauncherHeight / 2))
+        y: Math.max(Metrics.launcherScreenMargin,
+            Math.min(root.height - root.preferredLauncherHeight - Metrics.launcherScreenMargin,
+                Math.max(Metrics.space16, Math.round(root.height * (1 - Settings.launcherPositionFromBottom)
+                    - root.collapsedLauncherHeight / 2))))
         clip: true
         visible: root.geometryReady
 
         Behavior on height {
+            enabled: root.requested && !Settings.reducedMotion
             NumberAnimation {
-                duration: Settings.reducedMotion ? 0 : Motion.standard
+                id: heightAnimation
+                duration: Motion.standard
                 easing.type: Easing.OutCubic
             }
         }
@@ -69,6 +75,7 @@ PanelWindow {
 
             sourceComponent: LauncherPopup {
                 screenName: root.screenName
+                maximumHeight: Math.max(0, root.height - launcherContainer.y - Metrics.launcherScreenMargin)
             }
 
             onLoaded: Qt.callLater(() => {
@@ -81,6 +88,9 @@ PanelWindow {
     Shortcut {
         sequence: "Escape"
         enabled: root.requested
-        onActivated: SurfaceManager.closeDetachedLauncher()
+        onActivated: {
+            if (launcherLoader.item) launcherLoader.item.handleKey({ key: Qt.Key_Escape });
+            else SurfaceManager.closeDetachedLauncher();
+        }
     }
 }

@@ -8,6 +8,7 @@ import qs.services
 PopupFrame {
     id: root
     required property string screenName
+    keyboardNavigationEnabled: true
     property bool caffeinateExpanded: false
     readonly property var caffeinateModes: CaffeinateService.modes.concat([
         {id: "off", label: Strings.caffeinateOff, description: ""}
@@ -27,6 +28,10 @@ PopupFrame {
         }
     }
 
+    Keys.onShortcutOverride: event => {
+        if (event.key === Qt.Key_Escape && (outputAudio.expanded || inputAudio.expanded || caffeinateExpanded))
+            event.accepted = true;
+    }
     Keys.onEscapePressed: {
         if (outputAudio.expanded) {
             outputAudio.closeDevices(Qt.BacktabFocusReason);
@@ -72,12 +77,18 @@ PopupFrame {
             Layout.fillWidth: true
             Tile {
                 objectName: "quickWifi"
-                text: Strings.wifi
-                glyph: NetworkService.wifiEnabled ? Icons.wifi : Icons.wifiOff
-                accent: NetworkService.wifiEnabled
+                readonly property bool wired: !!NetworkService.wiredDevice
+                text: wired ? Strings.ethernet : Strings.wifi
+                glyph: wired ? Icons.ethernet : Icons.wifi
+                glyphSlashed: !wired && !NetworkService.wifiEnabled
+                accent: wired || NetworkService.wifiEnabled
                 enabled: NetworkService.available
-                Accessible.name: text + ": " + (NetworkService.wifiEnabled ? Strings.enabled : Strings.disabled)
-                onClicked: NetworkService.setWifiEnabled(!NetworkService.wifiEnabled)
+                Accessible.name: wired ? Strings.ethernetConnected
+                    : text + ": " + (NetworkService.wifiEnabled ? Strings.enabled : Strings.disabled)
+                onClicked: {
+                    if (wired) SurfaceManager.openOn("network", root.screenName);
+                    else NetworkService.setWifiEnabled(!NetworkService.wifiEnabled);
+                }
             }
             Tile {
                 objectName: "quickBluetooth"
@@ -115,8 +126,8 @@ PopupFrame {
                 Accessible.name: text + ": " + (CaffeinateService.active ? Strings.enabled : Strings.disabled)
                 Accessible.description: Strings.caffeinateChooseMode
                 Keys.onDownPressed: root.openCaffeinate(true)
-                Keys.onReturnPressed: clicked()
-                Keys.onEnterPressed: clicked()
+                Keys.onReturnPressed: root.openCaffeinate(true)
+                Keys.onEnterPressed: root.openCaffeinate(true)
                 onClicked: {
                     if (root.caffeinateExpanded) root.closeCaffeinate();
                     else root.openCaffeinate(!hovered);
@@ -163,7 +174,6 @@ PopupFrame {
                                     font.family: Metrics.fontFamily
                                     font.pixelSize: Metrics.fontBody
                                     font.weight: Font.DemiBold
-                                    font.underline: modeButton.visualFocus
                                     Layout.fillWidth: true
                                     wrapMode: Text.Wrap
                                 }
@@ -232,7 +242,7 @@ PopupFrame {
                 objectName: "quickBrightness"
                 from: 1
                 to: 100
-                stepSize: 0
+                stepSize: 5
                 value: BrightnessService.sliderPercentage
                 enabled: BrightnessService.available
                 Layout.fillWidth: true

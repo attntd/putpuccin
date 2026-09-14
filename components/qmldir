@@ -4,6 +4,7 @@ ActionButton 1.0 ActionButton.qml
 BarButton 1.0 BarButton.qml
 DetachedLauncher 1.0 DetachedLauncher.qml
 EmptyState 1.0 EmptyState.qml
+KeyboardNavigation 1.0 KeyboardNavigation.qml
 PopupFrame 1.0 PopupFrame.qml
 PopupLoader 1.0 PopupLoader.qml
 RevealSection 1.0 RevealSection.qml

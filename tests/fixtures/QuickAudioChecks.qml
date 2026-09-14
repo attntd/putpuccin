@@ -182,7 +182,11 @@ TestCase {
             settle();
             close(control, button);
             keyClick(Qt.Key_Return);
-            check(control.muted !== muted && !control.expanded, "Enter on icon did not toggle mute");
+            settle();
+            check(control.muted === muted && control.expanded, "Enter must open devices without toggling mute");
+            close(control, button);
+            keyClick(Qt.Key_Space);
+            check(control.muted !== muted && !control.expanded, "Space must toggle mute without opening devices");
             keyClick(Qt.Key_Space);
             check(control.muted === muted, "Space on icon did not toggle mute");
         }

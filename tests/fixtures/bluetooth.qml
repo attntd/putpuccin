@@ -237,6 +237,10 @@ ShellRoot {
                 check(loader.item.implicitHeight <= 340, "Picker does not fit a short screen");
                 list = find(loader.item, "availableBluetoothDevices");
                 list.forceActiveFocus(); keyClick(Qt.Key_End); settle();
+                keyClick(Qt.Key_K);
+                check(list.currentIndex === list.count - 2, "K did not move up the discovered devices");
+                keyClick(Qt.Key_J);
+                check(list.currentIndex === list.count - 1, "J did not return to the last device");
                 const chosen = list.currentItem.modelData.dbusPath;
                 keyClick(Qt.Key_Return); settle();
                 check(BluetoothService.pairingPath === chosen && !Bluetooth.firstAdapter.discovering,
@@ -252,7 +256,7 @@ ShellRoot {
                 let saved = find(loader.item, "savedBluetoothDevices");
                 check(saved.count === 1, "Saved list includes another adapter");
                 check(!find(saved, "bluetoothDeviceAddress_0"), "Main view exposes a MAC address");
-                saved.currentIndex = 0; saved.forceActiveFocus(); keyClick(Qt.Key_Right); settle();
+                saved.currentIndex = 0; saved.forceActiveFocus(); keyClick(Qt.Key_L); settle();
                 check(loader.item.managingHere && loader.item.keepOpen, "Keyboard did not open retained settings");
                 let input = find(loader.item, "bluetoothNameInput");
                 const renameButton = find(loader.item, "bluetoothRename");
@@ -267,6 +271,9 @@ ShellRoot {
                     "Details header overlaps or overflows");
                 keyClick(Qt.Key_Space); settle();
                 check(input.visible && input.activeFocus, "Name field lacks focus");
+                input.text = "";
+                for (const key of [Qt.Key_H, Qt.Key_J, Qt.Key_K, Qt.Key_L]) keyClick(key);
+                check(input.text === "hjkl" && input.activeFocus, "Vim keys intercepted the name editor");
                 input.text = "Niezapisana nazwa"; settle();
                 let renameCalls = Fixture.actions.calls;
                 click(find(loader.item, "bluetoothCancelRename"));

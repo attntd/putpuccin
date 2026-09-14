@@ -7,6 +7,7 @@ Rectangle {
     default property alias content: contentRoot.data
     property bool embedded: false
     property bool showBorder: true
+    property bool keyboardNavigationEnabled: false
     property int padding: embedded ? Metrics.space12 : Metrics.popupPadding
 
     color: embedded ? "transparent" : Theme.withAlpha(Theme.base, Settings.surfaceOpacity)
@@ -17,6 +18,16 @@ Rectangle {
     activeFocusOnTab: true
     implicitWidth: contentRoot.implicitWidth + padding * 2
     implicitHeight: contentRoot.implicitHeight + padding * 2
+
+    function focusDefaultControl() {
+        if (keyboardNavigationEnabled) navigation.focusFirst();
+    }
+
+    Keys.onPressed: event => {
+        if (keyboardNavigationEnabled) navigation.handleKey(event);
+    }
+
+    KeyboardNavigation { id: navigation; scope: root }
 
     Rectangle {
         visible: !root.embedded && root.showBorder

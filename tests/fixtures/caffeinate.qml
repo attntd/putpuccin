@@ -296,6 +296,79 @@ ShellRoot {
                 check(SurfaceManager.closed === closed + 1, "Second Escape did not close main panel");
                 return {passed: true};
             }
+            function keyboard() {
+                loader.item.closeCaffeinate();
+                find(loader.item, "quickOutputAudio").closeDevices();
+                find(loader.item, "quickInputAudio").closeDevices();
+                settle();
+                loader.item.focusDefaultControl();
+                check(find(loader.item, "quickWifi").activeFocus, "Default focus is not Wi-Fi");
+                const wifi = find(loader.item, "quickWifi");
+                const wifiGeometry = JSON.stringify(contentGeometry(wifi));
+                keyClick(Qt.Key_Space); settle();
+                check(!NetworkService.wifiEnabled && wifi.glyph === Icons.wifi && wifi.glyphSlashed,
+                    "Disabled Wi-Fi must preserve the glyph and use the toolbar slash");
+                check(JSON.stringify(contentGeometry(wifi)) === wifiGeometry, "Disabled Wi-Fi moved the icon or label");
+                keyClick(Qt.Key_Space); settle();
+                check(NetworkService.wifiEnabled && !wifi.glyphSlashed, "Wi-Fi did not toggle back");
+                NetworkService.wiredDevice = {connected:true}; settle();
+                check(wifi.text === Strings.ethernet && wifi.glyph === Icons.ethernet && wifi.accent && !wifi.glyphSlashed,
+                    "Ethernet must take precedence over Wi-Fi");
+                keyClick(Qt.Key_Return);
+                check(NetworkService.wifiEnabled && SurfaceManager.opened === "network", "Ethernet toggled Wi-Fi");
+                NetworkService.wifiEnabled = false; settle();
+                check(wifi.glyph === Icons.ethernet && !wifi.glyphSlashed && wifi.accent,
+                    "Disabled Wi-Fi changed the Ethernet state");
+                NetworkService.wiredDevice = null; NetworkService.wifiEnabled = true; settle();
+                keyClick(Qt.Key_L);
+                check(find(loader.item, "quickBluetooth").activeFocus, "L did not move right");
+                keyClick(Qt.Key_J);
+                check(find(loader.item, "quickScreenshot").activeFocus, "J did not keep the right column");
+                keyClick(Qt.Key_H);
+                const dnd = find(loader.item, "quickDnd");
+                check(dnd.activeFocus, "H did not move left");
+                const before = NotificationService.dnd;
+                keyClick(Qt.Key_Return);
+                check(NotificationService.dnd !== before, "Enter did not activate DND");
+                keyClick(Qt.Key_J);
+                check(tile().activeFocus, "J did not reach Caffeinate");
+                keyClick(Qt.Key_Return); settle();
+                check(loader.item.caffeinateExpanded, "Enter did not open Caffeinate");
+                keyClick(Qt.Key_Return); settle();
+                check(!loader.item.caffeinateExpanded && tile().activeFocus, "Caffeinate selection did not close its list");
+                keyClick(Qt.Key_Return); settle();
+                keyClick(Qt.Key_Escape); settle();
+                check(tile().activeFocus && !loader.item.caffeinateExpanded, "Escape did not return from Caffeinate");
+                const volume = find(loader.item, "quickVolume");
+                volume.forceActiveFocus(Qt.TabFocusReason);
+                AudioService.volume = 0.4;
+                keyClick(Qt.Key_L);
+                check(Math.abs(AudioService.volume - 0.45) < 0.001, "L did not increase volume");
+                keyClick(Qt.Key_H);
+                check(Math.abs(AudioService.volume - 0.4) < 0.001, "H did not decrease volume");
+                keyClick(Qt.Key_J);
+                check(find(loader.item, "quickMicrophoneVolume").activeFocus, "J changed the slider instead of moving down");
+                keyClick(Qt.Key_K);
+                check(volume.activeFocus, "K did not return to the output slider");
+                find(loader.item, "quickMute").forceActiveFocus(Qt.TabFocusReason);
+                const muted = AudioService.muted;
+                keyClick(Qt.Key_Space);
+                check(AudioService.muted !== muted && !find(loader.item, "quickOutputAudio").expanded,
+                    "Space must only mute output");
+                keyClick(Qt.Key_Space);
+                keyClick(Qt.Key_Return); settle();
+                const devices = find(loader.item, "quickOutputDevices");
+                check(devices.activeFocus, "Device picker did not take focus");
+                keyClick(Qt.Key_J);
+                check(devices.currentIndex === 1, "J did not select the second device");
+                keyClick(Qt.Key_Return); settle();
+                check(AudioService.sink === AudioService.headphones, "Enter did not select headphones");
+                check(find(loader.item, "quickMute").activeFocus, "Device selection lost focus");
+                check(!find(loader.item, "quickOutputAudio").expanded, "Device selection did not close its list");
+                AudioService.sink = AudioService.speakers;
+                NotificationService.dnd = before;
+                return {passed: true};
+            }
             function rapid() {
                 CaffeinateService.setMode("background");
                 check(CaffeinateService.busy && !CaffeinateService.active, "Mode became active before acknowledgement");
@@ -315,6 +388,7 @@ ShellRoot {
     IpcHandler {
         target: "caffeinatetest"
         function ready(): bool { return !!loader.item && !!CaffeinateService; }
+        function keyboard(): string { try { return JSON.stringify(tests.keyboard()); } catch(error) { return JSON.stringify({passed: false, error: String(error)}); } }
         function audio(reduced: bool): string { try { return JSON.stringify(audioTests.run(reduced)); } catch(error) { return JSON.stringify({passed: false, error: String(error)}); } }
         function audioCycle(): string { try { return JSON.stringify(audioTests.cycle()); } catch(error) { return JSON.stringify({passed: false, error: String(error)}); } }
         function microphoneOsd(): string { try { return JSON.stringify(tests.microphoneOsd()); } catch(error) { return JSON.stringify({passed: false, error: String(error)}); } }

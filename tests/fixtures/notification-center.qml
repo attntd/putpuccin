@@ -95,6 +95,14 @@ ShellRoot {
                 card(2).forceActiveFocus(Qt.TabFocusReason);
                 wait(240);
                 check(center.selectedUid === "n2" && card(2).stackRevealProgress === 1, "Keyboard did not reveal controls");
+                keyClick(Qt.Key_J); wait(250);
+                check(card(3).activeFocus, "J did not cross the group boundary");
+                keyClick(Qt.Key_K); wait(250);
+                check(card(2).activeFocus, "K did not return across the group boundary");
+                keyClick(Qt.Key_L); wait(50);
+                check(!card(2).activeFocus && card(2).keyboardFocusWithin, "L did not reach notification actions");
+                keyClick(Qt.Key_H); wait(50);
+                check(card(2).activeFocus, "H did not return from notification actions");
                 const discard = findChild(card(2), "notificationDiscard");
                 discard.forceActiveFocus(Qt.TabFocusReason);
                 wait(80);
@@ -169,6 +177,23 @@ ShellRoot {
                 list.cancelFlick();
                 mouseMove(sink, 5, 5);
                 wait(240);
+                NotificationService._records = Array.from({length: 24}, (_, index) =>
+                    NotificationService.normalize({uid: "long" + index, appName: "App " + index,
+                        summary: "Powiadomienie " + index, body: "Test przewijania", time: Date.now(), actions: []}));
+                wait(250);
+                const uids = center.displayedUids.slice();
+                center.focusNotification(uids[0]); wait(100);
+                for (let i = 1; i < uids.length; i++) {
+                    keyClick(Qt.Key_J); wait(30);
+                    const selected = findChild(center, "notificationCard_" + uids[i]);
+                    check(selected && selected.activeFocus, "J lost virtualized notification " + i);
+                }
+                check(list.contentY > 0, "J did not scroll the long notification history");
+                for (let i = uids.length - 2; i >= 0; i--) {
+                    keyClick(Qt.Key_K); wait(30);
+                    const selected = findChild(center, "notificationCard_" + uids[i]);
+                    check(selected && selected.activeFocus, "K lost virtualized notification " + i);
+                }
                 loader.active = false;
                 NotificationService._records = [];
                 return true;

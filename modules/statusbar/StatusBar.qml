@@ -60,17 +60,12 @@ PanelWindow {
     exclusiveZone: shouldShow ? Settings.reservedHeight : 0
     WlrLayershell.namespace: "quickshell-de:statusbar"
     WlrLayershell.layer: !shouldShow && activeSurface === "notifications" ? WlrLayer.Overlay : WlrLayer.Top
-    // Exclusive keyboard focus clears HyprlandFocusGrab and immediately closes
-    // the notification panel. Its island grab already focuses this window.
-    WlrLayershell.keyboardFocus: activeSurface === "notifications" ? WlrKeyboardFocus.OnDemand
-        : SurfaceManager.notificationsPinned(screenName)
-        || (shouldShow && activeSurface === "bluetooth" && BluetoothService.pairingBusy
-            && BluetoothService.pairingScreenName === screenName)
-        || (shouldShow && activeSurface === "bluetooth" && !!BluetoothService.managementPath
-            && BluetoothService.managementScreenName === screenName)
-        || (shouldShow && activeSurface === "launcher" && launcherSearchActive)
+    // The island grab focuses these menus, including their text editors.
+    // Switching to Exclusive would clear that grab and close the panel.
+    WlrLayershell.keyboardFocus: ["power", "notifications", "bluetooth", "quickSettings"].indexOf(activeSurface) >= 0
+        ? WlrKeyboardFocus.OnDemand
+        : (shouldShow && activeSurface === "launcher" && launcherSearchActive)
         || (shouldShow && activeSurface === "clipboard" && clipboardSearchActive)
-        || (activeSurface === "notifications" && notificationSearchActive)
         ? WlrKeyboardFocus.Exclusive : keyboardSurfaceActive
         ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
 

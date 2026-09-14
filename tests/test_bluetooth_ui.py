@@ -14,7 +14,7 @@ WORK = Path(tempfile.mkdtemp(prefix='qs-bluetooth-ui-'))
 CONFIG = WORK / 'shell'
 for directory, names in {
     'core': ['Theme', 'Metrics', 'Motion', 'Strings', 'Icons'],
-    'components': ['ActionButton', 'PopupFrame', 'ToggleRow', 'PillSwitch', 'SectionTitle', 'EmptyState'],
+    'components': ['ActionButton', 'PopupFrame', 'KeyboardNavigation', 'ToggleRow', 'PillSwitch', 'SectionTitle', 'EmptyState'],
     'services': ['BluetoothService'], 'popups': ['BluetoothPopup'],
     'modules/bluetooth': ['BluetoothDeviceList', 'PairingPrompt', 'DeviceDetails', 'DevicePicker'],
 }.items():

@@ -5,10 +5,11 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
-import Quickshell.Widgets
 import qs.components
 import qs.core
 import qs.services
+import "../modules/launcher"
+import "../modules/launcher/LauncherQuery.js" as Query
 
 PopupFrame {
     id: root
@@ -17,527 +18,381 @@ PopupFrame {
     signal searchFocusRequested()
     showBorder: false
     border.width: 0
+    property real maximumHeight: 600
     readonly property string searchRoot: Quickshell.env("HOME") || "/tmp"
+    property string chipMode: ""
+    property bool navigating: false
+    property bool pendingG: false
+    property bool destroying: false
+    property bool updateQueued: false
+    property bool applicationRefreshPending: false
     property var fileResults: []
     property string pendingFileQuery: ""
     property string runningFileQuery: ""
+    property int searchRevision: 0
+    property int runningRevision: -1
+    property string fileError: ""
     property int selectedResultIndex: -1
+    property var applications: []
+    readonly property var parsed: Query.parse(search.text)
+    readonly property string mode: chipMode || parsed.mode
+    readonly property string query: chipMode ? search.text.trim() : parsed.query
+    readonly property bool hasInput: chipMode.length > 0 || search.text.trim().length > 0
     readonly property bool fileSearchPending: fileSearch.running || fileSearchDebounce.running
-    readonly property int collapsedHeight: search.implicitHeight + padding * 2
-    readonly property var filteredApplications: {
-        const query = search.text.trim().toLocaleLowerCase();
-        if (!query)
-            return [];
-        const values = DesktopEntries.applications.values || [];
-        const matches = values.filter(entry => {
-            return entry && !entry.noDisplay
-                && root.applicationRelevance(entry, query) < 100;
-        });
-        matches.sort((a, b) => {
-            const scoreDifference = root.applicationRelevance(a, query)
-                - root.applicationRelevance(b, query);
-            return scoreDifference !== 0 ? scoreDifference : a.name.localeCompare(b.name);
-        });
-        return matches.slice(0, 4);
-    }
-    readonly property var clipboardResults: {
-        const query = search.text.trim().toLocaleLowerCase();
-        if (!query)
-            return [];
-        return ClipboardService.entries.filter(entry =>
-            entry.preview.toLocaleLowerCase().indexOf(query) >= 0).slice(0, 4);
-    }
-    readonly property int resultCount: filteredApplications.length + fileResults.length + clipboardResults.length
+    readonly property int collapsedHeight: Metrics.controlHeight + padding * 2
+    readonly property var results: Query.results(mode, query, applications,
+        fileResults, ClipboardService.entries, LauncherHistory.entries)
+    readonly property int resultCount: results.length
+    readonly property int visibleResultCount: Math.min(resultCount, Metrics.launcherVisibleRows)
+    readonly property bool historyView: mode === "recent" || (!query && (mode === "application" || mode === "file"))
+    readonly property string errorMessage: fileError || (historyView ? LauncherHistory.errorMessage : "")
+    readonly property real preferredHeight: collapsedHeight + (hasInput
+        ? Metrics.space8 + Math.max(1, visibleResultCount) * Metrics.launcherRowHeight
+            + Math.max(0, visibleResultCount - 1) * Metrics.space6
+            + (errorStatus.visible ? Metrics.space8 + errorStatus.implicitHeight : 0) : 0)
 
-    function normalized(value) {
-        return typeof value === "string" ? value.toLocaleLowerCase() : "";
-    }
+    implicitHeight: Math.min(maximumHeight, preferredHeight)
 
-    function wordStartsWith(value, query) {
-        return value.split(/[\s._\-/]+/).some(word => word.startsWith(query));
-    }
-
-    function applicationRelevance(application, query) {
-        const name = root.normalized(application.name);
-        const genericName = root.normalized(application.genericName);
-        const comment = root.normalized(application.comment);
-        const keywords = application.keywords
-            ? application.keywords.join(" ").toLocaleLowerCase() : "";
-
-        if (name === query)
-            return 0;
-        if (name.startsWith(query))
-            return 1;
-        if (root.wordStartsWith(name, query))
-            return 2;
-        if (name.indexOf(query) >= 0)
-            return 3;
-        if (genericName === query || genericName.startsWith(query))
-            return 4;
-        if (root.wordStartsWith(genericName, query))
-            return 5;
-        if (root.wordStartsWith(keywords, query))
-            return 6;
-        if (genericName.indexOf(query) >= 0 || keywords.indexOf(query) >= 0)
-            return 7;
-        if (comment.indexOf(query) >= 0)
-            return 8;
-        return 100;
+    function modeLabel(value) {
+        return ({ recent: Strings.launcherRecent, application: Strings.launcherApplications,
+            file: Strings.launcherFiles, clipboard: Strings.launcherClipboard,
+            command: Strings.launcherCommand })[value] || "";
     }
 
     function ensureSelection() {
-        if (root.resultCount < 1) {
-            root.selectedResultIndex = -1;
-            return;
+        selectedResultIndex = resultCount ? Math.max(0, Math.min(selectedResultIndex, resultCount - 1)) : -1;
+    }
+
+    function revealSelection() {
+        if (selectedResultIndex >= 0 && resultList.height > 0) {
+            resultList.forceLayout();
+            const item = resultList.itemAtIndex(selectedResultIndex);
+            if (!item || item.y < resultList.contentY
+                    || item.y + item.height > resultList.contentY + resultList.height)
+                resultList.positionViewAtIndex(selectedResultIndex, ListView.Contain);
         }
-        root.selectedResultIndex = Math.max(0,
-            Math.min(root.selectedResultIndex, root.resultCount - 1));
+    }
+
+    function refreshApplications() {
+        applications = Array.from(DesktopEntries.applications.values || []);
+    }
+
+    function queueUpdate(reloadApplications) {
+        if (destroying) return;
+        applicationRefreshPending = applicationRefreshPending || reloadApplications;
+        if (updateQueued) return;
+        updateQueued = true;
+        const owner = root;
+        // Coalesce model changes without a zero-duration QML Timer (which uses
+        // Qt's animation driver). Capture the owner, not a soon-to-be-deleted method.
+        Qt.callLater(() => {
+            if (!owner || owner.destroying !== false) return;
+            owner.updateQueued = false;
+            if (owner.applicationRefreshPending) {
+                owner.applicationRefreshPending = false;
+                owner.refreshApplications();
+                owner.queueUpdate(false);
+                return;
+            }
+            owner.ensureSelection();
+            owner.revealSelection();
+        });
     }
 
     function moveSelection(offset) {
-        if (root.resultCount < 1)
-            return;
-        if (root.selectedResultIndex < 0) {
-            root.selectedResultIndex = offset < 0 ? root.resultCount - 1 : 0;
-            return;
-        }
-        root.selectedResultIndex = (root.selectedResultIndex + offset
-            + root.resultCount) % root.resultCount;
+        if (!resultCount) return;
+        selectedResultIndex = Math.max(0, Math.min(resultCount - 1, selectedResultIndex + offset));
     }
 
     function activateSelection() {
-        if (root.selectedResultIndex < 0)
-            return;
-        if (root.selectedResultIndex < root.filteredApplications.length) {
-            root.launch(root.filteredApplications[root.selectedResultIndex]);
+        activate(results[selectedResultIndex]);
+    }
+
+    function activate(result) {
+        if (!result) return;
+        if (result.kind === "application") {
+            result.application.execute();
+            LauncherHistory.record("application", result.id);
+        } else if (result.kind === "file") {
+            Quickshell.execDetached(["xdg-open", result.id]);
+            LauncherHistory.record("file", result.id);
+        } else if (result.kind === "clipboard") {
+            if (!LauncherHistory.copyClipboard(result.id)) return;
+        } else if (result.kind === "command") {
+            // The command is intentionally interpreted only inside the user's shell.
+            Quickshell.execDetached(Query.terminalArguments(result.id, Quickshell.env("SHELL")));
+            LauncherHistory.record("command", result.id);
+        }
+        SurfaceManager.closeLauncher(screenName);
+    }
+
+    function focusSearch(selectAll) {
+        navigating = false;
+        pendingG = false;
+        search.forceActiveFocus(Qt.TabFocusReason);
+        if (selectAll === true) search.selectAll();
+    }
+
+    function handleKey(event) {
+        if (event.key === Qt.Key_Escape) {
+            if (!navigating && hasInput) {
+                navigating = true;
+                pendingG = false;
+                root.forceActiveFocus(Qt.TabFocusReason);
+                ensureSelection();
+            } else SurfaceManager.closeLauncher(screenName);
+            event.accepted = true;
             return;
         }
-        const fileIndex = root.selectedResultIndex - root.filteredApplications.length;
-        if (fileIndex < root.fileResults.length)
-            root.openFile(root.fileResults[fileIndex]);
-        else
-            root.copyClipboard(root.clipboardResults[fileIndex - root.fileResults.length]);
+        if (event.modifiers & (Qt.AltModifier | Qt.MetaModifier)) return;
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            if (!event.isAutoRepeat) activateSelection();
+        } else if (event.key === Qt.Key_Down) moveSelection(1);
+        else if (event.key === Qt.Key_Up) moveSelection(-1);
+        else if (!navigating) {
+            if (event.key !== Qt.Key_Backspace || search.text.length || !chipMode) return;
+            const prefix = Query.prefix(chipMode);
+            chipMode = "";
+            search.text = prefix;
+            search.cursorPosition = search.text.length;
+        } else {
+            const ctrl = event.modifiers & Qt.ControlModifier;
+            if (event.key === Qt.Key_Home) selectedResultIndex = resultCount ? 0 : -1;
+            else if (event.key === Qt.Key_End || (event.key === Qt.Key_G
+                    && (event.text === "G" || (event.modifiers & Qt.ShiftModifier))))
+                selectedResultIndex = resultCount - 1;
+            else if (event.key === Qt.Key_PageDown || (ctrl && (event.key === Qt.Key_D || event.key === Qt.Key_F)))
+                moveSelection(Math.max(1, Math.floor(resultList.height / (Metrics.launcherRowHeight + Metrics.space6))));
+            else if (event.key === Qt.Key_PageUp || (ctrl && (event.key === Qt.Key_U || event.key === Qt.Key_B)))
+                moveSelection(-Math.max(1, Math.floor(resultList.height / (Metrics.launcherRowHeight + Metrics.space6))));
+            else if (ctrl) return;
+            else if (event.key === Qt.Key_J) moveSelection(1);
+            else if (event.key === Qt.Key_K) moveSelection(-1);
+            else if (event.key === Qt.Key_G) {
+                if (pendingG) selectedResultIndex = resultCount ? 0 : -1;
+                pendingG = !pendingG;
+                event.accepted = true;
+                return;
+            } else if (event.key === Qt.Key_Slash || event.key === Qt.Key_I || event.key === Qt.Key_A) focusSearch();
+            else if (event.text === ":") {
+                chipMode = "";
+                search.text = ":";
+                focusSearch();
+                search.cursorPosition = 1;
+            } else {
+                pendingG = false;
+                return;
+            }
+        }
+        pendingG = false;
+        event.accepted = true;
     }
 
-    function focusSearch() {
-        search.forceActiveFocus();
-        search.selectAll();
-    }
-
-    function launch(application) {
-        if (!application)
-            return;
-        application.execute();
-        SurfaceManager.closeLauncher(root.screenName);
-    }
-
-    function openFile(path) {
-        if (!path)
-            return;
-        Quickshell.execDetached(["xdg-open", path]);
-        SurfaceManager.closeLauncher(root.screenName);
-    }
-
-    function copyClipboard(entry) {
-        if (!entry)
-            return;
-        ClipboardService.copy(entry.id);
-        SurfaceManager.closeLauncher(root.screenName);
-    }
-
-    function scheduleFileSearch(query) {
-        root.pendingFileQuery = query.trim();
-        root.fileResults = [];
+    function scheduleFileSearch() {
+        searchRevision++;
+        pendingFileQuery = (!mode || mode === "file") ? query : "";
+        fileResults = [];
+        fileError = "";
         fileSearchDebounce.stop();
-        if (root.pendingFileQuery.length < 1) {
-            if (fileSearch.running)
-                fileSearch.running = false;
-            return;
-        }
-        fileSearchDebounce.restart();
+        if (fileSearch.running) fileSearch.running = false;
+        if (pendingFileQuery) fileSearchDebounce.restart();
     }
 
     function startPendingFileSearch() {
-        if (fileSearch.running || fileSearchDebounce.running
-                || root.pendingFileQuery.length < 1)
-            return;
-        root.runningFileQuery = root.pendingFileQuery;
-        fileSearch.exec([
-            "fd", "--type", "file", "--absolute-path", "--fixed-strings",
-            "--ignore-case", "--no-ignore", "--one-file-system",
-            "--max-results", "5", "--print0", "--",
-            root.runningFileQuery, root.searchRoot
-        ]);
+        if (fileSearch.running || fileSearchDebounce.running || !pendingFileQuery) return;
+        runningFileQuery = pendingFileQuery;
+        runningRevision = searchRevision;
+        fileSearch.exec(["fd", "--type", "file", "--absolute-path", "--fixed-strings",
+            "--ignore-case", "--no-ignore", "--one-file-system", "--max-results", "100",
+            "--print0", "--", runningFileQuery, searchRoot]);
+        fileDeadline.restart();
     }
 
-    function fileName(path) {
-        const slash = path.lastIndexOf("/");
-        return slash >= 0 ? path.slice(slash + 1) : path;
+    onModeChanged: scheduleFileSearch()
+    onQueryChanged: {
+        selectedResultIndex = 0;
+        scheduleFileSearch();
     }
-
-    onClipboardResultsChanged: root.ensureSelection()
-    Component.onCompleted: ClipboardService.rememberFocus()
-
-    onFilteredApplicationsChanged: root.ensureSelection()
-    onFileResultsChanged: root.ensureSelection()
-
+    // DesktopEntries can remove/reinsert rows in a single update. Clamp only
+    // after that batch and the dependent resultCount binding have settled.
+    onResultsChanged: queueUpdate(false)
+    onSelectedResultIndexChanged: queueUpdate(false)
+    onHeightChanged: queueUpdate(false)
+    Keys.onShortcutOverride: event => { if (event.key === Qt.Key_Escape) event.accepted = true; }
+    Keys.onPressed: event => handleKey(event)
+    Component.onCompleted: {
+        ClipboardService.rememberFocus();
+        refreshApplications();
+    }
     Component.onDestruction: {
-        root.pendingFileQuery = "";
-        if (fileSearch.running)
-            fileSearch.running = false;
+        destroying = true;
+        fileSearchDebounce.stop();
+        pendingFileQuery = "";
+        fileSearch.running = false;
     }
 
+    Connections {
+        target: DesktopEntries.applications
+        function onValuesChanged() { root.queueUpdate(true); }
+    }
+
+    Timer { id: fileSearchDebounce; interval: 140; onTriggered: root.startPendingFileSearch() }
     Timer {
-        id: fileSearchDebounce
-        interval: 140
+        id: fileDeadline
+        interval: 3000
         onTriggered: {
-            if (fileSearch.running)
-                fileSearch.running = false;
-            else
-                root.startPendingFileSearch();
+            fileSearch.running = false;
+            root.fileError = Strings.launcherSearchFailed;
         }
     }
-
     Process {
         id: fileSearch
-        stdout: StdioCollector { id: fileSearchOutput }
-        onExited: exitCode => {
-            const completedQuery = root.runningFileQuery;
-            root.runningFileQuery = "";
-            if (exitCode === 0 && completedQuery === root.pendingFileQuery
-                    && completedQuery === search.text.trim()) {
-                root.fileResults = fileSearchOutput.text.split("\0")
-                    .filter(path => path.length > 0);
+        stdout: StdioCollector { id: fileOutput }
+        stderr: StdioCollector {}
+        onStarted: fileDeadline.restart()
+        onExited: code => {
+            fileDeadline.stop();
+            if (root.runningRevision === root.searchRevision) {
+                if (code === 0) root.fileResults = fileOutput.text.split("\0").filter(path => path.length > 0);
+                else root.fileError = Strings.launcherSearchFailed;
+            } else if (!root.destroying && root.pendingFileQuery && !fileSearchDebounce.running) {
+                fileSearchDebounce.restart();
             }
-            if (root.pendingFileQuery !== completedQuery)
-                Qt.callLater(root.startPendingFileSearch);
         }
     }
 
     ColumnLayout {
-        width: parent.width
+        anchors.fill: parent
         spacing: Metrics.space8
-
-        TextField {
-            id: search
-            placeholderText: Strings.searchApplicationsFilesClipboard
-            color: Theme.text
-            placeholderTextColor: Theme.overlay1
-            selectionColor: Theme.accent
-            selectedTextColor: Theme.crust
-            font.family: Metrics.fontFamily
-            font.pixelSize: Metrics.fontBody
-            leftPadding: 38
+        RowLayout {
             Layout.fillWidth: true
-            Component.onCompleted: root.scheduleFileSearch(text)
-            onTextChanged: {
-                root.selectedResultIndex = 0;
-                root.scheduleFileSearch(text);
-            }
-            onAccepted: root.activateSelection()
-            Keys.onDownPressed: event => {
-                root.moveSelection(1);
-                event.accepted = true;
-            }
-            Keys.onUpPressed: event => {
-                root.moveSelection(-1);
-                event.accepted = true;
-            }
-
-            background: Item {}
-
-            HoverHandler {
-                cursorShape: Qt.IBeamCursor
-            }
-            TapHandler {
-                onTapped: {
-                    root.searchFocusRequested();
-                    search.forceActiveFocus(Qt.MouseFocusReason);
-                }
-            }
-
+            Layout.preferredHeight: Metrics.controlHeight
+            spacing: Metrics.space8
             Text {
-                anchors.left: parent.left
-                anchors.leftMargin: Metrics.space12
-                anchors.verticalCenter: parent.verticalCenter
-                text: Icons.search
+                text: root.mode === "command" ? Icons.terminal : Icons.search
                 color: Theme.subtext0
                 font.family: Metrics.fontFamily
                 font.pixelSize: Metrics.iconSmall
+                Layout.leftMargin: Metrics.space12
             }
-        }
-
-        SectionTitle {
-            visible: applicationList.count > 0
-            text: Strings.applications
-        }
-
-        ListView {
-            id: applicationList
-            model: root.filteredApplications
-            spacing: Metrics.space6
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-            visible: count > 0
-            Layout.fillWidth: true
-            Layout.preferredHeight: count * 48 + Math.max(0, count - 1) * spacing
-
-            delegate: Rectangle {
-                id: applicationDelegate
-
-                required property var modelData
-                required property int index
-                readonly property bool selected: root.selectedResultIndex === index
-                width: ListView.view.width
-                height: 48
-                radius: 10
-                color: selected ? Theme.controlBackground(Theme.accent, false, false, true)
-                    : Theme.controlBackground(Theme.text, applicationMouse.containsMouse)
-                border.width: 0
-
-                function activate() {
-                    applicationList.currentIndex = applicationDelegate.index;
-                    root.launch(applicationDelegate.modelData);
+            Button {
+                id: chip
+                objectName: "launcherChip"
+                visible: root.chipMode.length > 0
+                text: root.modeLabel(root.chipMode)
+                Accessible.name: text + ", " + Strings.launcherRemoveFilter
+                padding: Metrics.space6
+                contentItem: Text {
+                    text: chip.text + " ×"
+                    color: Theme.accent
+                    font.family: Metrics.fontFamily
+                    font.pixelSize: Metrics.fontSmall
                 }
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.margins: Metrics.space8
-                    spacing: Metrics.space8
-
-                    Item {
-                        Layout.preferredWidth: Metrics.iconLarge
-                        Layout.preferredHeight: Metrics.iconLarge
-
-                        IconImage {
-                            id: applicationIcon
-                            anchors.fill: parent
-                            source: applicationDelegate.modelData.id === "signal"
-                                || applicationDelegate.modelData.id === "signal.desktop"
-                                || applicationDelegate.modelData.icon === "signal-desktop"
-                                ? Icons.signalSource
-                                : applicationDelegate.modelData.icon
-                                    ? Quickshell.iconPath(applicationDelegate.modelData.icon) : ""
-                            implicitSize: Metrics.iconLarge
-                        }
-
-                        Text {
-                            visible: applicationIcon.status !== Image.Ready
-                            anchors.centerIn: parent
-                            text: Icons.launcher
-                            color: Theme.subtext0
-                            font.family: Metrics.fontFamily
-                            font.pixelSize: Metrics.iconMedium
-                        }
-                    }
-
-                    ColumnLayout {
-                        spacing: 0
-                        Layout.fillWidth: true
-
-                        Text {
-                            text: applicationDelegate.modelData.name
-                            color: Theme.text
-                            font.family: Metrics.fontFamily
-                            font.pixelSize: Metrics.fontSmall
-                            font.weight: Font.DemiBold
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
-                        }
-
-                        Text {
-                            visible: text.length > 0
-                            text: applicationDelegate.modelData.genericName
-                                || applicationDelegate.modelData.comment || ""
-                            color: Theme.subtext0
-                            font.family: Metrics.fontFamily
-                            font.pixelSize: 10
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
-                        }
-                    }
+                background: Rectangle {
+                    radius: Metrics.launcherChipRadius
+                    color: Theme.controlBackground(Theme.accent, chip.hovered, chip.down, true)
                 }
-
-                MouseArea {
-                    id: applicationMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    onContainsMouseChanged: {
-                        if (containsMouse)
-                            root.selectedResultIndex = applicationDelegate.index;
-                    }
-                    onClicked: applicationDelegate.activate()
-                }
+                onClicked: { root.chipMode = ""; root.focusSearch(); }
             }
-        }
-
-        RowLayout {
-            visible: search.text.trim().length >= 1
-                && (fileList.count > 0 || root.fileSearchPending)
-            Layout.fillWidth: true
-
-            SectionTitle {
-                text: Strings.files
-                Layout.fillWidth: true
-            }
-
-            Text {
-                visible: root.fileSearchPending
-                text: Strings.searchingFiles
-                color: Theme.subtext0
+            TextField {
+                id: search
+                objectName: "launcherSearch"
+                placeholderText: root.mode === "command" ? Strings.launcherCommandHint
+                    : root.chipMode ? Strings.search : Strings.searchApplicationsFilesClipboard
+                color: Theme.text
+                placeholderTextColor: Theme.overlay1
+                selectionColor: Theme.accent
+                selectedTextColor: Theme.crust
                 font.family: Metrics.fontFamily
-                font.pixelSize: 10
-            }
-        }
-
-        ListView {
-            id: fileList
-            model: root.fileResults
-            spacing: Metrics.space6
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-            visible: count > 0
-            Layout.fillWidth: true
-            Layout.preferredHeight: count * 48 + Math.max(0, count - 1) * spacing
-
-            delegate: Rectangle {
-                id: fileDelegate
-
-                required property string modelData
-                required property int index
-                readonly property int resultIndex: root.filteredApplications.length + index
-                readonly property bool selected: root.selectedResultIndex === resultIndex
-                width: ListView.view.width
-                height: 48
-                radius: 10
-                color: selected ? Theme.controlBackground(Theme.accent, false, false, true)
-                    : Theme.controlBackground(Theme.text, fileMouse.containsMouse)
-                border.width: 0
-
-                function activate() {
-                    fileList.currentIndex = fileDelegate.index;
-                    root.openFile(fileDelegate.modelData);
-                }
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.margins: Metrics.space8
-                    spacing: Metrics.space8
-
-                    Text {
-                        text: Icons.file
-                        color: Theme.subtext0
-                        font.family: Metrics.fontFamily
-                        font.pixelSize: Metrics.iconMedium
-                    }
-
-                    ColumnLayout {
-                        spacing: 0
-                        Layout.fillWidth: true
-
-                        Text {
-                            text: root.fileName(fileDelegate.modelData)
-                            color: Theme.text
-                            font.family: Metrics.fontFamily
-                            font.pixelSize: Metrics.fontSmall
-                            font.weight: Font.DemiBold
-                            elide: Text.ElideMiddle
-                            Layout.fillWidth: true
-                        }
-
-                        Text {
-                            text: fileDelegate.modelData
-                            color: Theme.subtext0
-                            font.family: Metrics.fontFamily
-                            font.pixelSize: 10
-                            elide: Text.ElideMiddle
-                            Layout.fillWidth: true
-                        }
+                font.pixelSize: Metrics.fontBody
+                selectByMouse: true
+                leftPadding: 0
+                Layout.fillWidth: true
+                Layout.preferredHeight: Metrics.controlHeight
+                background: Item {}
+                onActiveFocusChanged: if (activeFocus) { root.navigating = false; root.pendingG = false; }
+                onTextEdited: {
+                    const prefix = Query.parse(text);
+                    if (!root.chipMode && prefix.committed) {
+                        const mode = prefix.mode;
+                        const tail = text.replace(/^:[afc!]?\s+/i, "");
+                        root.chipMode = mode;
+                        text = tail;
+                        cursorPosition = text.length;
                     }
                 }
-
-                MouseArea {
-                    id: fileMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    onContainsMouseChanged: {
-                        if (containsMouse)
-                            root.selectedResultIndex = fileDelegate.resultIndex;
-                    }
-                    onClicked: fileDelegate.activate()
+                Keys.onPressed: event => root.handleKey(event)
+                HoverHandler { cursorShape: Qt.IBeamCursor }
+                TapHandler {
+                    onTapped: { root.searchFocusRequested(); root.focusSearch(); }
                 }
             }
         }
-
-        SectionTitle {
-            visible: clipboardList.count > 0
-            text: Strings.clipboard
-        }
-
         ListView {
-            id: clipboardList
-            model: root.clipboardResults
+            id: resultList
+            objectName: "launcherResults"
+            visible: root.resultCount > 0
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumHeight: 0
+            model: root.results
+            // Selection belongs to the popup. Disable ListView's independent
+            // current-item scrolling so it cannot race explicit containment.
+            currentIndex: -1
+            highlightFollowsCurrentItem: false
             spacing: Metrics.space6
             clip: true
             boundsBehavior: Flickable.StopAtBounds
-            visible: count > 0
-            Layout.fillWidth: true
-            Layout.preferredHeight: count * 48 + Math.max(0, count - 1) * spacing
-
-            delegate: Rectangle {
-                id: clipboardDelegate
+            keyNavigationEnabled: false
+            ScrollBar.vertical: ScrollBar {
+                id: scrollBar
+                visible: size < 1
+                policy: ScrollBar.AlwaysOn
+                padding: Metrics.space2
+                // A static thumb avoids the style's delayed fade surviving
+                // focus changes and respects reduced motion without a timer.
+                contentItem: Rectangle {
+                    implicitWidth: Metrics.space4
+                    implicitHeight: Metrics.space4
+                    radius: Metrics.space2
+                    color: scrollBar.pressed ? Theme.accent : Theme.overlay0
+                }
+                background: Item {}
+            }
+            delegate: LauncherResult {
                 required property var modelData
                 required property int index
-                readonly property int resultIndex: root.filteredApplications.length + root.fileResults.length + index
-                readonly property bool selected: root.selectedResultIndex === resultIndex
-                width: ListView.view.width
-                height: 48
-                radius: 10
-                color: selected ? Theme.controlBackground(Theme.accent, false, false, true)
-                    : Theme.controlBackground(Theme.text, clipboardMouse.containsMouse)
-                border.width: 0
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.margins: Metrics.space8
-                    spacing: Metrics.space8
-                    Text {
-                        text: clipboardDelegate.modelData.binary ? Icons.image : Icons.clipboard
-                        color: Theme.text
-                        font.family: Metrics.fontFamily
-                        font.pixelSize: Metrics.iconMedium
-                    }
-                    Text {
-                        text: clipboardDelegate.modelData.preview
-                        textFormat: Text.PlainText
-                        color: Theme.text
-                        font.family: Metrics.fontFamily
-                        font.pixelSize: Metrics.fontSmall
-                        elide: Text.ElideRight
-                        maximumLineCount: 2
-                        wrapMode: Text.Wrap
-                        Layout.fillWidth: true
-                    }
-                }
-                MouseArea {
-                    id: clipboardMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    onContainsMouseChanged: {
-                        if (containsMouse)
-                            root.selectedResultIndex = clipboardDelegate.resultIndex;
-                    }
-                    onClicked: root.copyClipboard(clipboardDelegate.modelData)
-                }
+                result: modelData
+                selected: root.selectedResultIndex === index
+                width: resultList.width - (scrollBar.visible ? scrollBar.width + Metrics.space4 : 0)
+                onActivated: root.activate(modelData)
+                onPointed: if (!root.navigating) root.selectedResultIndex = index
             }
         }
-
-        EmptyState {
-            visible: search.text.trim().length >= 1
-                && applicationList.count === 0 && fileList.count === 0 && clipboardList.count === 0
-                && !root.fileSearchPending
+        Text {
+            visible: root.hasInput && root.resultCount === 0
             Layout.fillWidth: true
-            icon: Icons.search
-            title: Strings.noResults
+            Layout.fillHeight: true
+            Layout.minimumHeight: 0
+            verticalAlignment: Text.AlignVCenter
+            horizontalAlignment: Text.AlignHCenter
+            text: root.fileSearchPending || (root.historyView && !LauncherHistory.ready) ? Strings.loading
+                : root.mode === "command" ? Strings.launcherCommandHint
+                : root.historyView ? Strings.launcherEmptyHistory : Strings.noResults
+            color: Theme.subtext0
+            font.family: Metrics.fontFamily
+            font.pixelSize: Metrics.fontSmall
+            elide: Text.ElideRight
+        }
+        Text {
+            id: errorStatus
+            visible: root.hasInput && root.errorMessage.length > 0
+            text: root.errorMessage
+            color: Theme.warning
+            font.family: Metrics.fontFamily
+            font.pixelSize: Metrics.fontSmall
+            elide: Text.ElideRight
+            Layout.fillWidth: true
         }
     }
 }

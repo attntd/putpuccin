@@ -11,6 +11,7 @@ import qs.modules.bluetooth
 PopupFrame {
     id: root
     required property string screenName
+    keyboardNavigationEnabled: true
     property real maximumHeight: 700
     property bool showAvailable: false
     readonly property bool ownsSurface: !embedded || SurfaceManager.isOpen("bluetooth", screenName)

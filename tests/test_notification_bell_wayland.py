@@ -203,6 +203,11 @@ hl.config({misc={disable_hyprland_logo=true,disable_splash_rendering=true,force_
                 wait(lambda: state()['query'] == 'test' and state()['focused'])
                 if cycle % 3 == 0:
                     subprocess.run(['wtype', '-k', 'Escape'], env=env, check=True, timeout=5)
+                    # Search has an explicit editing mode; first Escape leaves
+                    # it so H/J/K/L can navigate without changing the query.
+                    if state()['open']:
+                        assert not state()['focused'], state()
+                        subprocess.run(['wtype', '-k', 'Escape'], env=env, check=True, timeout=5)
                 elif cycle % 3 == 1:
                     pointer_at((20, 650))
                 else:

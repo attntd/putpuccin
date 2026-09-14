@@ -62,8 +62,14 @@ ColumnLayout {
             Accessible.name: root.label + ": " + (root.muted ? Strings.disabled : Strings.enabled)
             Accessible.description: Strings.audioDeviceHoldHint
             Keys.onDownPressed: root.openDevices(true)
-            Keys.onReturnPressed: { holdHandled = false; clicked(); }
-            Keys.onEnterPressed: { holdHandled = false; clicked(); }
+            Keys.onPressed: event => {
+                if (event.key === Qt.Key_J && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))) {
+                    root.openDevices(true);
+                    event.accepted = true;
+                }
+            }
+            Keys.onReturnPressed: root.openDevices(true)
+            Keys.onEnterPressed: root.openDevices(true)
             onPressed: holdHandled = false
             onClicked: {
                 if (holdHandled) return;
@@ -99,6 +105,7 @@ ColumnLayout {
             objectName: root.input ? "quickMicrophoneVolume" : "quickVolume"
             from: 0
             to: 1
+            stepSize: 0.05
             value: root.displayedLevel
             enabled: root.available
             Layout.fillWidth: true
@@ -160,6 +167,7 @@ ColumnLayout {
                     required property var modelData
                     required property int index
                     readonly property bool keyboardFocus: deviceList.activeFocus && ListView.isCurrentItem
+                    highlighted: keyboardFocus
                     objectName: root.prefix + "Device-" + index
                     text: modelData.description || modelData.nickname || modelData.name
                     width: ListView.view.width
@@ -193,7 +201,6 @@ ColumnLayout {
                             color: deviceButton.accent ? Theme.accent : Theme.text
                             font.family: Metrics.fontFamily
                             font.pixelSize: Metrics.fontSmall
-                            font.underline: deviceButton.keyboardFocus
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                         }

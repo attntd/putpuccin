@@ -27,6 +27,10 @@ Singleton {
         + mediaTransportPrimaryWidth + 4 * space6
     readonly property int mediaPanelMaximumWidth: 560
     readonly property int popupRowHeight: 44
+    readonly property int launcherRowHeight: 48
+    readonly property int launcherVisibleRows: 5
+    readonly property int launcherScreenMargin: 25
+    readonly property int launcherChipRadius: 8
     readonly property int minHitSize: 32
     readonly property int popupWidth: 410
     readonly property int networkSettingsHeight: 620

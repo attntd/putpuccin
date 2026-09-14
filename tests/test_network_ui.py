@@ -276,7 +276,7 @@ CONFIG = WORK / 'shell'
 print('WORK', WORK, flush=True)
 for directory, names in {
     'core': ['Theme', 'Metrics', 'Motion', 'Strings', 'Icons'],
-    'components': ['ActionButton', 'PopupFrame', 'ToggleRow', 'PillSwitch', 'SectionTitle', 'EmptyState', 'SearchField'],
+    'components': ['ActionButton', 'PopupFrame', 'KeyboardNavigation', 'ToggleRow', 'PillSwitch', 'SectionTitle', 'EmptyState', 'SearchField'],
     'services': ['NetworkService'], 'popups': ['NetworkPopup'],
     'modules/network': ['NetworkSettings', 'NetworkProfileEditor', 'NetworkField', 'NetworkChoice', 'NetworkWindow', 'NetworkNearby', 'NetworkProfiles', 'NetworkVpnImport'],
 }.items():

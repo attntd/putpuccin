@@ -98,6 +98,18 @@ Rectangle {
         }
     }
 
+    Connections {
+        target: root.barWindow && root.barWindow.contentItem
+            ? root.barWindow.contentItem.Window.window : null
+        function onActiveChanged() {
+            // Native window activation can replace the initial Tab focus
+            // reason. Select after activation too, so the highlight is visible.
+            if (root.expanded && root.barWindow.contentItem.Window.active
+                    && expansionLoader.item && typeof expansionLoader.item.focusDefaultControl === "function")
+                Qt.callLater(expansionLoader.item.focusDefaultControl);
+        }
+    }
+
     HyprlandFocusGrab {
         windows: root.barWindow && root.barWindow.contentItem ? [root.barWindow] : []
         active: root.expanded && windows.length > 0
@@ -161,7 +173,11 @@ Rectangle {
         width: Math.max(0, root.width - Metrics.space8)
         opacity: root.expanded ? 1 : 0
 
-        onLoaded: root.syncExpansionHeight()
+        onLoaded: {
+            root.syncExpansionHeight();
+            if (item && typeof item.focusDefaultControl === "function")
+                Qt.callLater(item.focusDefaultControl);
+        }
         onImplicitHeightChanged: root.syncExpansionHeight()
 
         Behavior on opacity {
